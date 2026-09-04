@@ -215,17 +215,26 @@ local function drawSnake()
     love.graphics.circle("fill", x + 16 + eyeOffsetX, y + 16 + eyeOffsetY, 2)
 end
 
+local function drawStatBox(label, value, x, accent, valueColor)
+    local y, width, height = 20, 108, 64
+    setColor(colors.panel, 0.96)
+    love.graphics.rectangle("fill", x, y, width, height, 5, 5)
+    setColor(colors.border, 0.78)
+    love.graphics.setLineWidth(1)
+    love.graphics.rectangle("line", x + 0.5, y + 0.5, width - 1, height - 1, 5, 5)
+    setColor(accent)
+    love.graphics.rectangle("fill", x, y, 4, height, 3, 3)
+    setColor(colors.muted)
+    love.graphics.print(label, x + 14, y + 9)
+    setColor(valueColor)
+    love.graphics.printf(tostring(value), x + 14, y + 32, width - 26, "right")
+end
+
 local function drawHeader()
     setColor(colors.text)
     love.graphics.print("LUA LÖVE SNAKE", 42, 28)
-    setColor(colors.muted)
-    love.graphics.print("SCORE", 650, 27)
-    setColor(colors.gold)
-    love.graphics.printf(tostring(game.score), 650, 48, 92, "right")
-    setColor(colors.muted)
-    love.graphics.print("BEST", 774, 27)
-    setColor(colors.text)
-    love.graphics.printf(tostring(game.bestScore), 774, 48, 92, "right")
+    drawStatBox("SCORE", game.score, 632, colors.gold, colors.gold)
+    drawStatBox("BEST", game.bestScore, 758, colors.snakeDark, colors.text)
 end
 
 local function drawStateOverlay()

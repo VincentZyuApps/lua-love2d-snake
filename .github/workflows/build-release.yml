@@ -83,8 +83,16 @@ jobs:
       - name: Test build tools
         run: python -m unittest scripts/ci/test-ci-tools.py
 
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1
+
+      - name: Test game logic with Lua 5.1
+        run: lua5.1 tests/test-runner.lua
+
       - name: Verify Hamiltonian AI route
-        run: python scripts/ai/verify-hamiltonian-cycle.py --path . --check --seeds 20
+        run: python scripts/ai/verify-hamiltonian-cycle.py --path . --check --seeds 100
 
       - name: Build LÖVE package
         run: >-

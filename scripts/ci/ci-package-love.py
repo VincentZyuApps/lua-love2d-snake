@@ -5,7 +5,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 
-PACKAGE_FILES = ("conf.lua", "main.lua")
+PACKAGE_FILES = ("ai-cycle.lua", "conf.lua", "main.lua")
 
 
 def add_file(archive: ZipFile, source: Path, archive_name: str) -> None:

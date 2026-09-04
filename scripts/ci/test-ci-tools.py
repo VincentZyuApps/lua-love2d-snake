@@ -37,12 +37,13 @@ class PackageTests(unittest.TestCase):
     def test_package_has_game_files_at_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            (root / "ai-cycle.lua").write_text("return {}\n", encoding="utf-8")
             (root / "main.lua").write_text("function love.draw() end\n", encoding="utf-8")
             (root / "conf.lua").write_text("function love.conf(t) end\n", encoding="utf-8")
             output = root / "dist" / "game.love"
             package.build_package(root, output)
             with ZipFile(output) as archive:
-                self.assertEqual(archive.namelist(), ["conf.lua", "main.lua"])
+                self.assertEqual(archive.namelist(), ["ai-cycle.lua", "conf.lua", "main.lua"])
 
 
 if __name__ == "__main__":

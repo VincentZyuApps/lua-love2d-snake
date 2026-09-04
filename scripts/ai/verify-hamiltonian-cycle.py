@@ -8,7 +8,7 @@ from pathlib import Path
 
 COLS = 30
 ROWS = 21
-ROUTE_FILE = "ai-cycle.lua"
+ROUTE_FILE = "src/ai/cycle-data.lua"
 DIRECTION_CHARS = {
     (1, 0): "R",
     (-1, 0): "L",

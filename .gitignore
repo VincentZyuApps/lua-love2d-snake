@@ -4,3 +4,4 @@ __pycache__/
 *.py[cod]
 *.love
 *.AppImage
+lua-love2d-snake-stats.json*

@@ -5,7 +5,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 
-PACKAGE_FILES = ("ai-cycle.lua", "conf.lua", "main.lua")
+ROOT_FILES = ("conf.lua", "main.lua")
 
 
 def add_file(archive: ZipFile, source: Path, archive_name: str) -> None:
@@ -16,14 +16,19 @@ def add_file(archive: ZipFile, source: Path, archive_name: str) -> None:
 
 
 def build_package(source_dir: Path, output: Path) -> None:
-    missing = [name for name in PACKAGE_FILES if not (source_dir / name).is_file()]
+    missing = [name for name in ROOT_FILES if not (source_dir / name).is_file()]
     if missing:
         raise FileNotFoundError("Missing game files: " + ", ".join(missing))
 
+    source_files = [source_dir / name for name in ROOT_FILES]
+    source_files.extend(sorted((source_dir / "src").rglob("*.lua")))
+    if len(source_files) == len(ROOT_FILES):
+        raise FileNotFoundError("No Lua source files were found under src.")
+
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w") as archive:
-        for name in PACKAGE_FILES:
-            add_file(archive, source_dir / name, name)
+        for source in source_files:
+            add_file(archive, source, source.relative_to(source_dir).as_posix())
 
 
 def main() -> None:

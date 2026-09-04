@@ -1,8 +1,8 @@
 *.lua text eol=lf
-*.py text eol=lf linguist-language=Python linguist-detectable=true
-*.md text eol=lf linguist-language=Markdown linguist-detectable=true
-.gitattributes text eol=lf linguist-language=gitattributes linguist-detectable=true
+*.py text eol=lf linguist-language=Python linguist-detectable
+*.md text eol=lf linguist-language=Markdown linguist-detectable
+.gitattributes text eol=lf linguist-language=gitattributes linguist-detectable
 .gitignore text eol=lf
-.github/**/*.yml text eol=lf linguist-language=YAML linguist-detectable=true
-.github/**/*.yaml text eol=lf linguist-language=YAML linguist-detectable=true
+.github/**/*.yml text eol=lf linguist-language=YAML linguist-detectable
+.github/**/*.yaml text eol=lf linguist-language=YAML linguist-detectable
 VERSION text eol=lf

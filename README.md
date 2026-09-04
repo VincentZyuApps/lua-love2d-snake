@@ -1,6 +1,6 @@
 # 🐍 Lua LÖVE Snake
 
-一个无外部游戏依赖的 LÖVE 贪吃蛇小游戏，需要 LÖVE 11.5 或更高版本。/ A dependency-free LÖVE snake game requiring LÖVE 11.5 or later.
+一个提供撞墙与穿越边界模式的 LÖVE 贪吃蛇小游戏，需要 LÖVE 11.5 或更高版本。/ A LÖVE snake game with solid-wall and border-wrapping modes, requiring LÖVE 11.5 or later.
 
 > 本项目也可作为使用 GitHub Actions 构建 LÖVE 游戏的跨平台模板。/ This project also serves as a cross-platform GitHub Actions template for LÖVE games.
 
@@ -44,7 +44,7 @@ open -n -a love .
 
 ## 🎮 操作 / Controls
 
-- `WASD` 或方向键：转向；`P` 或 `Esc`：暂停 / `WASD` or arrows: turn; `P` or `Esc`: pause
-- `Enter` 或鼠标：开始或重开 / `Enter` or mouse: start or restart
+- `WASD` 或方向键：转向或开始；`P` 或 `Esc`：暂停；`Enter` 或点击其他位置：开始 / `WASD` or arrows: turn or start; `P` or `Esc`: pause; `Enter` or click elsewhere: start
+- `M` 或模式按钮：切换 `WALLS` / `WRAP`，局中按 `Y` 重开或 `N` 取消 / `M` or mode buttons: switch `WALLS` / `WRAP`; during a run, press `Y` to restart or `N` to cancel
 
-窗口失焦时游戏会自动暂停；重新点击窗口即可继续。/ The game pauses when unfocused; click the window to continue.
+窗口失焦时自动暂停；两种模式在本次运行中分别记录 BEST。/ The game pauses when unfocused; each mode keeps its own BEST for the current session.

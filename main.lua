@@ -3,6 +3,8 @@ local CELL = 24
 local COLS, ROWS = 30, 21
 local BOARD_X = (BASE_W - COLS * CELL) / 2
 local BOARD_Y = 132
+local MODE_X, MODE_Y = 326, 20
+local MODE_W, MODE_H = 242, 64
 
 local colors = {
     background = { 13, 22, 29 },
@@ -33,6 +35,11 @@ local keyDirections = {
     d = "right", right = "right",
 }
 
+local modes = {
+    { id = "walls", label = "WALLS", color = colors.gold },
+    { id = "wrap", label = "WRAP", color = colors.snake },
+}
+
 local function setColor(color, alpha)
     love.graphics.setColor(color[1] / 255, color[2] / 255, color[3] / 255, alpha or 1)
 end
@@ -52,6 +59,23 @@ local function containsSnake(x, y, ignoreTail)
     return false
 end
 
+local function canChangeMode()
+    return game.state == "title" or game.state == "over" or game.state == "won"
+        or game.state == "playing" or game.state == "paused"
+end
+
+local function isBetweenRounds()
+    return game.state == "title" or game.state == "over" or game.state == "won"
+end
+
+local function activeBestScore()
+    return game.bestScores and game.bestScores[game.mode] or 0
+end
+
+local function recordBestScore()
+    game.bestScores[game.mode] = math.max(activeBestScore(), game.score)
+end
+
 local function spawnFood()
     local open = {}
     for y = 1, ROWS do
@@ -62,6 +86,7 @@ local function spawnFood()
         end
     end
     if #open == 0 then
+        recordBestScore()
         game.state = "won"
         return
     end
@@ -71,6 +96,11 @@ end
 local function resetGame(initialDirection)
     local startDirection = initialDirection or "right"
     local heading = directions[startDirection]
+    local selectedMode = game.mode or "walls"
+    local bestScores = game.bestScores or {
+        walls = game.bestScore or 0,
+        wrap = 0,
+    }
     local snake = {}
     for i = 0, 3 do
         snake[#snake + 1] = {
@@ -86,7 +116,8 @@ local function resetGame(initialDirection)
         queuedDirection = startDirection,
         food = { x = 21, y = 11 },
         score = 0,
-        bestScore = game.bestScore or 0,
+        mode = selectedMode,
+        bestScores = bestScores,
         timer = 0,
         stepInterval = 0.145,
         pulse = 0,
@@ -94,6 +125,46 @@ local function resetGame(initialDirection)
         pausedForFocus = false,
         inputEvent = game.inputEvent or "WAITING FOR INPUT",
     }
+end
+
+local function requestMode(mode)
+    if not canChangeMode() or (mode ~= "walls" and mode ~= "wrap") then
+        return false
+    end
+    if game.mode == mode then
+        return true
+    end
+    if isBetweenRounds() then
+        game.mode = mode
+        resetGame()
+    else
+        game.pendingMode = mode
+        game.stateBeforeModePrompt = game.state
+        game.state = "confirm-mode"
+    end
+    return true
+end
+
+local function toggleMode()
+    requestMode(game.mode == "walls" and "wrap" or "walls")
+end
+
+local function confirmModeChange()
+    if game.state ~= "confirm-mode" or not game.pendingMode then
+        return
+    end
+    game.mode = game.pendingMode
+    resetGame()
+    game.state = "playing"
+end
+
+local function cancelModeChange()
+    if game.state ~= "confirm-mode" then
+        return
+    end
+    game.state = game.stateBeforeModePrompt or "playing"
+    game.pendingMode = nil
+    game.stateBeforeModePrompt = nil
 end
 
 local function startGame(initialDirection)
@@ -116,7 +187,7 @@ end
 
 local function endGame()
     game.state = "over"
-    game.bestScore = math.max(game.bestScore, game.score)
+    recordBestScore()
 end
 
 local function step()
@@ -124,12 +195,18 @@ local function step()
     local heading = directions[game.direction]
     local head = game.snake[1]
     local nextHead = { x = head.x + heading.x, y = head.y + heading.y }
-    local eating = nextHead.x == game.food.x and nextHead.y == game.food.y
+    local outside = nextHead.x < 1 or nextHead.x > COLS or nextHead.y < 1 or nextHead.y > ROWS
 
-    if nextHead.x < 1 or nextHead.x > COLS or nextHead.y < 1 or nextHead.y > ROWS then
+    if outside and game.mode == "walls" then
         endGame()
         return
     end
+    if outside then
+        nextHead.x = (nextHead.x - 1) % COLS + 1
+        nextHead.y = (nextHead.y - 1) % ROWS + 1
+    end
+
+    local eating = nextHead.x == game.food.x and nextHead.y == game.food.y
     if containsSnake(nextHead.x, nextHead.y, not eating) then
         endGame()
         return
@@ -230,11 +307,47 @@ local function drawStatBox(label, value, x, accent, valueColor)
     love.graphics.printf(tostring(value), x + 14, y + 32, width - 26, "right")
 end
 
+local function modeSegmentBounds(index)
+    local innerX, innerY = MODE_X + 8, MODE_Y + 29
+    local segmentWidth = (MODE_W - 16) / #modes
+    return innerX + (index - 1) * segmentWidth, innerY, segmentWidth, MODE_H - 37
+end
+
+local function drawModeSelector()
+    setColor(colors.panel, 0.96)
+    love.graphics.rectangle("fill", MODE_X, MODE_Y, MODE_W, MODE_H, 5, 5)
+    setColor(colors.border, 0.78)
+    love.graphics.rectangle("line", MODE_X + 0.5, MODE_Y + 0.5, MODE_W - 1, MODE_H - 1, 5, 5)
+    setColor(canChangeMode() and colors.text or colors.muted)
+    love.graphics.print("MODE", MODE_X + 12, MODE_Y + 8)
+
+    for index, option in ipairs(modes) do
+        local x, y, width, height = modeSegmentBounds(index)
+        local selected = option.id == game.mode
+        setColor(selected and option.color or colors.background, selected and 0.88 or 0.72)
+        love.graphics.rectangle("fill", x, y, width, height, 3, 3)
+        setColor(selected and option.color or colors.border, selected and 1 or 0.55)
+        love.graphics.rectangle("line", x + 0.5, y + 0.5, width - 1, height - 1, 3, 3)
+        setColor(selected and colors.background or colors.muted)
+        love.graphics.printf(option.label, x, y + 7, width, "center")
+    end
+end
+
+local function modeAtPoint(x, y)
+    for index, option in ipairs(modes) do
+        local segmentX, segmentY, width, height = modeSegmentBounds(index)
+        if x >= segmentX and x <= segmentX + width and y >= segmentY and y <= segmentY + height then
+            return option.id
+        end
+    end
+end
+
 local function drawHeader()
     setColor(colors.text)
     love.graphics.print("LUA LÖVE SNAKE", 42, 28)
+    drawModeSelector()
     drawStatBox("SCORE", game.score, 632, colors.gold, colors.gold)
-    drawStatBox("BEST", game.bestScore, 758, colors.snakeDark, colors.text)
+    drawStatBox("BEST", activeBestScore(), 758, colors.snakeDark, colors.text)
 end
 
 local function drawStateOverlay()
@@ -244,13 +357,17 @@ local function drawStateOverlay()
     setColor(colors.background, 0.78)
     love.graphics.rectangle("fill", BOARD_X, BOARD_Y, COLS * CELL, ROWS * CELL)
 
-    local title, subtitle
+    local title, subtitle, prompt
     if game.state == "title" then
         title = "LUA LÖVE SNAKE"
         subtitle = "Press Enter or a direction key"
     elseif game.state == "paused" then
         title = "PAUSED"
         subtitle = game.pausedForFocus and "Click the game window to continue" or "Press P or Esc to continue"
+    elseif game.state == "confirm-mode" then
+        title = "SWITCH TO " .. string.upper(game.pendingMode) .. "?"
+        subtitle = "This run will end and its score will not count."
+        prompt = "Y  RESTART     N  CANCEL"
     elseif game.state == "won" then
         title = "BOARD CLEARED"
         subtitle = "Press Enter to play again"
@@ -263,11 +380,15 @@ local function drawStateOverlay()
     love.graphics.printf(title, BOARD_X, BOARD_Y + 210, COLS * CELL, "center")
     setColor(colors.muted)
     love.graphics.printf(subtitle, BOARD_X, BOARD_Y + 240, COLS * CELL, "center")
+    if prompt then
+        setColor(colors.gold)
+        love.graphics.printf(prompt, BOARD_X, BOARD_Y + 266, COLS * CELL, "center")
+    end
 end
 
 local function drawFooter()
     setColor(colors.muted)
-    love.graphics.print("WASD / ARROWS  TURN     P / ESC  PAUSE", 30, BASE_H - 33)
+    love.graphics.print("WASD / ARROWS  TURN    P / ESC  PAUSE    M  MODE", 30, BASE_H - 33)
 
     local function down(key)
         return love.keyboard.isScancodeDown(key) and "1" or "0"
@@ -325,6 +446,23 @@ end
 
 function love.keypressed(key, scancode)
     game.inputEvent = "DOWN  key=" .. tostring(key) .. " scan=" .. tostring(scancode)
+    if game.state == "confirm-mode" then
+        if key == "y" or scancode == "y" then
+            confirmModeChange()
+            game.inputEvent = "MODE  " .. string.upper(game.mode)
+        elseif key == "n" or scancode == "n" then
+            cancelModeChange()
+            game.inputEvent = "MODE  CANCELLED"
+        end
+        return
+    end
+    if (key == "m" or scancode == "m") and canChangeMode() then
+        toggleMode()
+        game.inputEvent = game.state == "confirm-mode"
+            and "MODE  CONFIRM " .. string.upper(game.pendingMode)
+            or "MODE  " .. string.upper(game.mode)
+        return
+    end
     -- Scancodes keep WASD stable across keyboard layouts and input methods.
     local direction = keyDirections[scancode] or keyDirections[key]
     if direction then
@@ -362,8 +500,18 @@ function love.focus(focused)
     end
 end
 
-function love.mousepressed(_, _, button)
+function love.mousepressed(x, y, button)
     game.inputEvent = "MOUSE button=" .. tostring(button)
+    if button == 1 and canChangeMode() then
+        local scale, offsetX, offsetY = scaleTransform()
+        local mode = modeAtPoint((x - offsetX) / scale, (y - offsetY) / scale)
+        if mode and requestMode(mode) then
+            game.inputEvent = game.state == "confirm-mode"
+                and "MODE  CONFIRM " .. string.upper(game.pendingMode)
+                or "MODE  " .. string.upper(game.mode)
+            return
+        end
+    end
     if game.state == "title" or game.state == "over" or game.state == "won" then
         startGame()
     end

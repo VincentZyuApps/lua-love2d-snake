@@ -1,0 +1,278 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build an artifact or publish a release
+        type: choice
+        options:
+          - artifact
+          - release
+        default: artifact
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LOVE_VERSION: "11.5"
+  APP_SLUG: lua-love2d-snake
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.trigger.outputs.should_build }}
+      should_release: ${{ steps.trigger.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Match the exact build trigger
+        id: trigger
+        shell: bash
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          MANUAL_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            if [[ "$MANUAL_MODE" == "release" ]]; then
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            fi
+          elif python scripts/ci/ci-trigger.py --message "$COMMIT_MESSAGE" --token build-release; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          elif python scripts/ci/ci-trigger.py --message "$COMMIT_MESSAGE" --token build-action; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read and validate version
+        id: version
+        if: steps.trigger.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '\r\n' < VERSION)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must contain a SemVer value such as 0.1.0." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  game-package:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test build tools
+        run: python -m unittest scripts/ci/test-ci-tools.py
+
+      - name: Build LÖVE package
+        run: >-
+          python scripts/ci/package-love.py
+          --path .
+          --output dist/${{ env.APP_SLUG }}-v${{ needs.prepare.outputs.version }}.love
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-love
+          path: dist/*.love
+          retention-days: 1
+          if-no-files-found: error
+
+  windows:
+    needs: [prepare, game-package]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-love
+          path: dist
+
+      - name: Build fused Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ needs.prepare.outputs.version }}'
+          $runtimeArchive = 'love-windows.zip'
+          Invoke-WebRequest `
+            -Uri "https://github.com/love2d/love/releases/download/${env:LOVE_VERSION}/love-${env:LOVE_VERSION}-win64.zip" `
+            -OutFile $runtimeArchive
+          Expand-Archive $runtimeArchive -DestinationPath runtime
+          $loveExe = Get-ChildItem runtime -Recurse -Filter love.exe | Select-Object -First 1
+          if ($null -eq $loveExe) { throw 'love.exe was not found in the official runtime.' }
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item "$($loveExe.Directory.FullName)\*" package -Recurse
+
+          $outputExe = "package\${env:APP_SLUG}.exe"
+          $output = [System.IO.File]::Create($outputExe)
+          try {
+            foreach ($inputPath in @($loveExe.FullName, (Resolve-Path 'dist\*.love').Path)) {
+              $input = [System.IO.File]::OpenRead($inputPath)
+              try { $input.CopyTo($output) } finally { $input.Dispose() }
+            }
+          } finally {
+            $output.Dispose()
+          }
+          Remove-Item package\love.exe
+          Remove-Item package\lovec.exe -ErrorAction SilentlyContinue
+          Compress-Archive -Path package\* `
+            -DestinationPath "${env:APP_SLUG}-windows-x64-v${version}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-windows-x64
+          path: lua-love2d-snake-windows-x64-v*.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  linux:
+    needs: [prepare, game-package]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-love
+          path: dist
+
+      - name: Build fused Linux AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.version }}"
+          curl -fL \
+            "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-x86_64.AppImage" \
+            -o love.AppImage
+          cat love.AppImage dist/*.love > "${APP_SLUG}-linux-x86_64-v${VERSION}.AppImage"
+          chmod +x "${APP_SLUG}-linux-x86_64-v${VERSION}.AppImage"
+          test "$(head -c 4 "${APP_SLUG}-linux-x86_64-v${VERSION}.AppImage")" = $'\x7fELF'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-linux-x86_64
+          path: lua-love2d-snake-linux-x86_64-v*.AppImage
+          retention-days: 1
+          if-no-files-found: error
+
+  macos:
+    needs: [prepare, game-package]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-love
+          path: dist
+
+      - name: Build universal macOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.version }}"
+          curl -fL \
+            "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-macos.zip" \
+            -o love-macos.zip
+          ditto -x -k love-macos.zip runtime
+          LOVE_APP="$(find runtime -type d -name love.app -print -quit)"
+          test -n "$LOVE_APP"
+          APP="Lua Love2D Snake.app"
+          cp -R "$LOVE_APP" "$APP"
+          cp dist/*.love "$APP/Contents/Resources/game.love"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName Lua Love2D Snake" "$APP/Contents/Info.plist"
+          if ! /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Lua Love2D Snake" "$APP/Contents/Info.plist"; then
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Lua Love2D Snake" "$APP/Contents/Info.plist"
+          fi
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.vincentzyuapps.lua-love2d-snake" "$APP/Contents/Info.plist"
+          ARCHS="$(lipo -archs "$APP/Contents/MacOS/love")"
+          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" \
+            "${APP_SLUG}-macos-universal-v${VERSION}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-macos-universal
+          path: lua-love2d-snake-macos-universal-v*.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, game-package, windows, linux, macos]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-love
+          path: release-files
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-windows-x64
+          path: release-files
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-linux-x86_64
+          path: release-files
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-macos-universal
+          path: release-files
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-files
+          sha256sum *.love *.zip *.AppImage > SHA256SUMS.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lua-love2d-snake-v${{ needs.prepare.outputs.version }}
+          path: release-files/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: needs.prepare.outputs.should_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ needs.prepare.outputs.version }}"
+          if gh api --silent "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}"; then
+            echo "Tag ${TAG} already exists; update VERSION before releasing." >&2
+            exit 1
+          fi
+          gh release create "$TAG" release-files/* \
+            --target "$GITHUB_SHA" \
+            --title "Lua LÖVE Snake ${TAG}" \
+            --generate-notes \
+            --latest

@@ -241,7 +241,7 @@ local function drawStateOverlay()
         subtitle = "Press Enter or a direction key"
     elseif game.state == "paused" then
         title = "PAUSED"
-        subtitle = game.pausedForFocus and "Click the game window to continue" or "Press P to continue"
+        subtitle = game.pausedForFocus and "Click the game window to continue" or "Press P or Esc to continue"
     elseif game.state == "won" then
         title = "BOARD CLEARED"
         subtitle = "Press Enter to play again"
@@ -258,7 +258,7 @@ end
 
 local function drawFooter()
     setColor(colors.muted)
-    love.graphics.print("WASD / ARROWS  TURN     P  PAUSE", 30, BASE_H - 33)
+    love.graphics.print("WASD / ARROWS  TURN     P / ESC  PAUSE", 30, BASE_H - 33)
 
     local function down(key)
         return love.keyboard.isScancodeDown(key) and "1" or "0"
@@ -326,14 +326,14 @@ function love.keypressed(key, scancode)
         if game.state == "title" or game.state == "over" or game.state == "won" then
             startGame()
         end
-    elseif key == "p" then
+    elseif key == "p" or key == "escape" then
         if game.state == "playing" then
             game.state = "paused"
+            game.pausedForFocus = false
         elseif game.state == "paused" then
             game.state = "playing"
+            game.pausedForFocus = false
         end
-    elseif key == "escape" then
-        love.event.quit()
     end
 end
 

@@ -44,7 +44,7 @@ open -n -a love .
 
 ## 🎮 操作 / Controls
 
-- `WASD` 或方向键：转向；`P`：暂停 / `WASD` or arrows: turn; `P`: pause
-- `Enter` 或鼠标：开始或重开；`Esc`：退出 / `Enter` or mouse: start or restart; `Esc`: quit
+- `WASD` 或方向键：转向；`P` 或 `Esc`：暂停 / `WASD` or arrows: turn; `P` or `Esc`: pause
+- `Enter` 或鼠标：开始或重开 / `Enter` or mouse: start or restart
 
 窗口失焦时游戏会自动暂停；重新点击窗口即可继续。/ The game pauses when unfocused; click the window to continue.

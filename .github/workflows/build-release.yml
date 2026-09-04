@@ -85,7 +85,7 @@ jobs:
 
       - name: Build LÖVE package
         run: >-
-          python scripts/ci/package-love.py
+          python scripts/ci/ci-package-love.py
           --path .
           --output dist/${{ env.APP_SLUG }}-v${{ needs.prepare.outputs.version }}.love
 

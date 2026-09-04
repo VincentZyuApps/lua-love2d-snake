@@ -20,7 +20,7 @@ def load_module(name: str, filename: str):
 
 
 trigger = load_module("ci_trigger", "ci-trigger.py")
-package = load_module("package_love", "package-love.py")
+package = load_module("package_love", "ci-package-love.py")
 
 
 class TriggerTests(unittest.TestCase):

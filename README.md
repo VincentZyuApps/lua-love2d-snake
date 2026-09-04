@@ -1,4 +1,4 @@
-# 🐍 Lua LÖVE Snake / Lua LÖVE Snake
+# 🐍 Lua LÖVE Snake
 
 一个无外部游戏依赖的 LÖVE 贪吃蛇小游戏，需要 LÖVE 11.5 或更高版本。/ A dependency-free LÖVE snake game requiring LÖVE 11.5 or later.
 

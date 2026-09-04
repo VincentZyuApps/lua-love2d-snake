@@ -83,6 +83,9 @@ jobs:
       - name: Test build tools
         run: python -m unittest scripts/ci/test-ci-tools.py
 
+      - name: Verify Hamiltonian AI route
+        run: python scripts/ai/verify-hamiltonian-cycle.py --path . --check --seeds 20
+
       - name: Build LÖVE package
         run: >-
           python scripts/ci/ci-package-love.py

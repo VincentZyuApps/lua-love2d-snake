@@ -12,8 +12,9 @@ return {
     end,
     chooseDirection = function(world)
         local head = world:head()
-        local index = Cycle.indexOf(head.x, head.y)
-        local directionName = index and Cycle.get().directions[index] or nil
+        local cycle = Cycle.get(world.cols, world.rows)
+        local index = Cycle.indexOf(cycle, head.x, head.y)
+        local directionName = index and cycle.directions[index] or nil
         if directionName and Grid.isSafe(world, directionName) then
             return directionName
         end

@@ -1,7 +1,7 @@
 local Storage = {}
 Storage.__index = Storage
 
-local FILE_NAME = "lua-love2d-snake-stats.json"
+local DEFAULT_FILE_NAME = "lua-love2d-snake-stats.json"
 
 local function dirname(path)
     return path and path:match("^(.*)[/\\][^/\\]+$") or nil
@@ -104,22 +104,23 @@ end
 
 function Storage.new(options)
     options = options or {}
+    local fileName = options.fileName or DEFAULT_FILE_NAME
     local portablePath = options.portablePath
     if portablePath == nil then
         local portable = portableDirectory()
-        portablePath = portable and joinPath(portable, FILE_NAME) or nil
+        portablePath = portable and joinPath(portable, fileName) or nil
     end
     local portable = dirname(portablePath)
     if portablePath and (fileExists(portablePath) or probeWritable(portable)) then
-        return setmetatable({ mode = "PORTABLE", path = portablePath }, Storage)
+        return setmetatable({ mode = "PORTABLE", path = portablePath, fileName = fileName }, Storage)
     end
 
-    local self = setmetatable({}, Storage)
-    self:switchToUserDirectory(options.userPath)
+    local self = setmetatable({ fileName = fileName }, Storage)
+    self:switchToUserDirectory(options.userPath, fileName)
     return self
 end
 
-function Storage:switchToUserDirectory(path)
+function Storage:switchToUserDirectory(path, fileName)
     self.mode = "USER DIRECTORY"
     if path then
         self.path = path
@@ -127,7 +128,7 @@ function Storage:switchToUserDirectory(path)
     end
     local wrote, errorMessage = love.filesystem.write(".lua-love2d-snake-write-test", "ok")
     love.filesystem.remove(".lua-love2d-snake-write-test")
-    self.path = joinPath(love.filesystem.getSaveDirectory(), FILE_NAME)
+    self.path = joinPath(love.filesystem.getSaveDirectory(), fileName or self.fileName or DEFAULT_FILE_NAME)
     return wrote, errorMessage
 end
 

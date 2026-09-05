@@ -1,8 +1,9 @@
+local BoardConfig = require("src.board")
 local json = require("src.vendor.json")
 
 local Stats = {}
 Stats.__index = Stats
-Stats.SCHEMA_VERSION = 1
+Stats.SCHEMA_VERSION = 2
 
 local function nonNegativeNumber(value, fallback)
     if type(value) == "number" and value >= 0 and value < math.huge then
@@ -28,17 +29,22 @@ local function sanitizeRecord(record)
     return sanitized
 end
 
-function Stats.slotKey(edgeMode, controlMode, algorithmId)
+function Stats.slotKey(cols, rows, edgeMode, controlMode, algorithmId)
     local effectiveAlgorithm = controlMode == "manual" and "player" or algorithmId
-    return table.concat({ edgeMode, controlMode, effectiveAlgorithm }, "|")
+    return table.concat({ BoardConfig.key(cols, rows), edgeMode, controlMode, effectiveAlgorithm }, "|")
 end
 
 function Stats.new(data)
     local self = setmetatable({ data = { version = Stats.SCHEMA_VERSION, records = {} } }, Stats)
-    if type(data) == "table" and data.version == Stats.SCHEMA_VERSION and type(data.records) == "table" then
+    self.migrated = type(data) == "table" and data.version == 1
+    if type(data) == "table" and type(data.records) == "table" then
         for key, record in pairs(data.records) do
             if type(key) == "string" then
-                self.data.records[key] = sanitizeRecord(record)
+                local migratedKey = key
+                if data.version == 1 then
+                    migratedKey = BoardConfig.key(BoardConfig.DEFAULT_COLS, BoardConfig.DEFAULT_ROWS) .. "|" .. key
+                end
+                self.data.records[migratedKey] = sanitizeRecord(record)
             end
         end
     end
@@ -47,7 +53,7 @@ end
 
 function Stats.fromJson(source)
     local decoded = json.decode(source)
-    if type(decoded) ~= "table" or decoded.version ~= Stats.SCHEMA_VERSION then
+    if type(decoded) ~= "table" or (decoded.version ~= 1 and decoded.version ~= Stats.SCHEMA_VERSION) then
         error("unsupported stats schema")
     end
     return Stats.new(decoded)
@@ -57,16 +63,16 @@ function Stats:toJson()
     return json.encode(self.data) .. "\n"
 end
 
-function Stats:get(edgeMode, controlMode, algorithmId)
-    local key = Stats.slotKey(edgeMode, controlMode, algorithmId)
+function Stats:get(cols, rows, edgeMode, controlMode, algorithmId)
+    local key = Stats.slotKey(cols, rows, edgeMode, controlMode, algorithmId)
     if not self.data.records[key] then
         self.data.records[key] = sanitizeRecord(nil)
     end
     return self.data.records[key]
 end
 
-function Stats:record(edgeMode, controlMode, algorithmId, outcome)
-    local record = self:get(edgeMode, controlMode, algorithmId)
+function Stats:record(cols, rows, edgeMode, controlMode, algorithmId, outcome)
+    local record = self:get(cols, rows, edgeMode, controlMode, algorithmId)
     record.runs = record.runs + 1
     record.bestScore = math.max(record.bestScore, math.floor(outcome.score or 0))
     if outcome.won then
@@ -82,6 +88,25 @@ function Stats:record(edgeMode, controlMode, algorithmId, outcome)
         end
     end
     return record
+end
+
+function Stats:listDimensions()
+    local found, dimensions = {}, {}
+    for key in pairs(self.data.records) do
+        local cols, rows = key:match("^(%d+)x(%d+)|")
+        cols, rows = tonumber(cols), tonumber(rows)
+        local valid = BoardConfig.validate(cols, rows)
+        local sizeKey = cols and BoardConfig.key(cols, rows) or nil
+        if valid and not found[sizeKey] then
+            found[sizeKey] = true
+            dimensions[#dimensions + 1] = { cols = cols, rows = rows, key = sizeKey }
+        end
+    end
+    table.sort(dimensions, function(left, right)
+        return left.cols * left.rows < right.cols * right.rows
+            or left.cols * left.rows == right.cols * right.rows and left.key < right.key
+    end)
+    return dimensions
 end
 
 function Stats:reset()

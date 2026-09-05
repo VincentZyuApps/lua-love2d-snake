@@ -1,17 +1,16 @@
+local BoardConfig = require("src.board")
 local Constants = require("src.constants")
 local ControlSession = require("src.ai.control-session")
-local Cycle = require("src.ai.cycle-helpers")
+local GameFactory = require("src.factory")
 local Game = require("src.game")
 local Registry = require("src.ai.algorithm-registry")
-local Rng = require("src.rng")
+local Settings = require("src.settings")
 local Stats = require("src.stats")
 local Storage = require("src.storage")
 
 local BASE_W, BASE_H = Constants.BASE_WIDTH, Constants.BASE_HEIGHT
-local CELL = Constants.CELL_SIZE
-local COLS, ROWS = Constants.COLS, Constants.ROWS
-local BOARD_X = (BASE_W - COLS * CELL) / 2
-local BOARD_Y = Constants.BOARD_Y
+local CONTENT_X, CONTENT_Y = Constants.BOARD_AREA_X, Constants.BOARD_AREA_Y
+local CONTENT_W, CONTENT_H = Constants.BOARD_AREA_WIDTH, Constants.BOARD_AREA_HEIGHT
 local EDGE_X, CONTROL_X, SPEED_X = 42, 278, 682
 local SELECTOR_Y, SELECTOR_H = 94, 30
 local EDGE_W, CONTROL_W, SPEED_W = 220, 390, 236
@@ -58,7 +57,16 @@ local app = {
     state = "title",
     focused = true,
     inputEvent = "WAITING FOR INPUT",
+    cols = BoardConfig.DEFAULT_COLS,
+    rows = BoardConfig.DEFAULT_ROWS,
 }
+
+local function updateBoardLayout()
+    app.cell = math.floor(math.min(CONTENT_W / app.cols, CONTENT_H / app.rows))
+    app.boardWidth, app.boardHeight = app.cols * app.cell, app.rows * app.cell
+    app.boardX = CONTENT_X + math.floor((CONTENT_W - app.boardWidth) / 2)
+    app.boardY = CONTENT_Y + math.floor((CONTENT_H - app.boardHeight) / 2)
+end
 
 local function setColor(color, alpha)
     love.graphics.setColor(color[1] / 255, color[2] / 255, color[3] / 255, alpha or 1)
@@ -86,18 +94,18 @@ local function displaySeed(value, maximum)
 end
 
 local function saveStats()
-    local ok, errorMessage = app.storage:write(app.stats:toJson())
-    if not ok and app.storage.mode == "PORTABLE" and app.storage.switchToUserDirectory then
-        app.storage:switchToUserDirectory()
-        ok, errorMessage = app.storage:write(app.stats:toJson())
+    local ok, errorMessage = app.statsStorage:write(app.stats:toJson())
+    if not ok and app.statsStorage.mode == "PORTABLE" and app.statsStorage.switchToUserDirectory then
+        app.statsStorage:switchToUserDirectory()
+        ok, errorMessage = app.statsStorage:write(app.stats:toJson())
     end
     app.saveNotice = ok and nil or ("SAVE FAILED: " .. tostring(errorMessage))
     return ok
 end
 
 local function loadStats()
-    app.storage = Storage.new()
-    local source = app.storage:read()
+    app.statsStorage = Storage.new()
+    local source = app.statsStorage:read()
     if not source then
         app.stats = Stats.new()
         return
@@ -105,23 +113,45 @@ local function loadStats()
     local ok, result = pcall(Stats.fromJson, source)
     if ok then
         app.stats = result
+        if result.migrated then
+            result.migrated = false
+            saveStats()
+        end
     else
-        local backupPath = app.storage:backupCorrupt()
+        local backupPath = app.statsStorage:backupCorrupt()
         app.stats = Stats.new()
         app.saveNotice = backupPath and "INVALID STATS WERE BACKED UP" or "INVALID STATS; BACKUP FAILED"
     end
 end
 
-local function manualSnake(directionName)
-    local heading = Game.DIRECTIONS[directionName]
-    local cells = {}
-    for offset = 0, 3 do
-        cells[#cells + 1] = {
-            x = 15 - heading.x * offset,
-            y = 11 - heading.y * offset,
-        }
+local function saveSettings()
+    app.settings:setBoardSize(app.cols, app.rows)
+    local ok, errorMessage = app.settingsStorage:write(app.settings:toJson())
+    if not ok and app.settingsStorage.mode == "PORTABLE" then
+        app.settingsStorage:switchToUserDirectory()
+        ok, errorMessage = app.settingsStorage:write(app.settings:toJson())
     end
-    return cells, directionName
+    app.saveNotice = ok and nil or ("SAVE FAILED: " .. tostring(errorMessage))
+    return ok
+end
+
+local function loadSettings()
+    app.settingsStorage = Storage.new({ fileName = "lua-love2d-snake-settings.json" })
+    local source = app.settingsStorage:read()
+    if source then
+        local ok, result = pcall(Settings.fromJson, source)
+        if ok then
+            app.settings = result
+        else
+            local backupPath = app.settingsStorage:backupCorrupt()
+            app.settings = Settings.new()
+            app.saveNotice = backupPath and "INVALID SETTINGS WERE BACKED UP" or "INVALID SETTINGS; BACKUP FAILED"
+        end
+    else
+        app.settings = Settings.new()
+    end
+    app.cols, app.rows = app.settings.data.cols, app.settings.data.rows
+    updateBoardLayout()
 end
 
 local function resetPerformance()
@@ -136,24 +166,16 @@ local function resetPerformance()
 end
 
 local function resetEngine(initialDirection)
-    local cells, directionName
-    if app.controlMode == "manual" then
-        cells, directionName = manualSnake(initialDirection or "right")
-    else
-        cells, directionName = Cycle.initialSnake(15, 11, 4)
-    end
-
-    app.foodRng = Rng.new(app.seedText, 11)
-    app.aiRng = Rng.new(app.seedText, 29)
-    app.engine = Game.new({
-        cols = COLS,
-        rows = ROWS,
+    updateBoardLayout()
+    app.engine, app.aiRng, app.foodRng = GameFactory.create({
+        cols = app.cols,
+        rows = app.rows,
         edgeMode = app.edgeMode,
-        initialCells = cells,
-        initialDirection = directionName,
-        foodRng = app.foodRng,
-        firstFood = { x = 21, y = 11 },
+        controlMode = app.controlMode,
+        initialDirection = initialDirection or "right",
+        seed = app.seedText,
     })
+    local directionName = app.engine.direction
     app.algorithm = Registry.get(app.algorithmId)
     app.controlSession = ControlSession.new(app.algorithm, app.engine, app.aiRng)
     app.queuedDirection = directionName
@@ -180,11 +202,11 @@ local function isBetweenRounds()
 end
 
 local function activeRecord()
-    return app.stats:get(app.edgeMode, app.controlMode, app.algorithmId)
+    return app.stats:get(app.cols, app.rows, app.edgeMode, app.controlMode, app.algorithmId)
 end
 
 local function finishRun(won)
-    app.stats:record(app.edgeMode, app.controlMode, app.algorithmId, {
+    app.stats:record(app.cols, app.rows, app.edgeMode, app.controlMode, app.algorithmId, {
         score = app.engine.score,
         steps = app.engine.steps,
         elapsed = app.runElapsed,
@@ -203,6 +225,8 @@ local function currentSetting(kind)
         return app.controlMode
     elseif kind == "algorithm" then
         return app.algorithmId
+    elseif kind == "size" then
+        return BoardConfig.key(app.cols, app.rows)
     end
     return nil
 end
@@ -216,11 +240,16 @@ local function applySetting(kind, value)
         app.algorithmId = value
     elseif kind == "seed" then
         app.seedText = value
+    elseif kind == "size" then
+        app.cols, app.rows = value.cols, value.rows
+        updateBoardLayout()
+        saveSettings()
     end
 end
 
 local function requestChange(kind, value)
-    if kind ~= "seed" and currentSetting(kind) == value then
+    local comparable = kind == "size" and BoardConfig.key(value.cols, value.rows) or value
+    if kind ~= "seed" and currentSetting(kind) == comparable then
         return true
     end
     if isBetweenRounds() then
@@ -281,7 +310,8 @@ local function setSpeedIndex(index)
 end
 
 local function changeSpeed(delta)
-    if app.state == "confirm-change" or app.state == "confirm-reset" or app.state == "seed-input" then
+    if app.state == "confirm-change" or app.state == "confirm-reset"
+        or app.state == "seed-input" or app.state == "size-input" then
         return false
     end
     return setSpeedIndex(app.speedIndex + delta)
@@ -306,7 +336,8 @@ local function cycleAlgorithm(delta)
 end
 
 local function openModal(state)
-    if app.state == "confirm-change" or app.state == "confirm-reset" or app.state == "seed-input" then
+    if app.state == "confirm-change" or app.state == "confirm-reset"
+        or app.state == "seed-input" or app.state == "size-input" then
         return
     end
     app.stateBeforeModal = app.state
@@ -345,9 +376,61 @@ local function submitSeed()
     requestChange("seed", value)
 end
 
+local function openSizeInput()
+    app.sizeWidthBuffer = tostring(app.cols)
+    app.sizeHeightBuffer = tostring(app.rows)
+    app.sizeField = "width"
+    app.sizeError = nil
+    openModal("size-input")
+end
+
+local function submitSize(cols, rows)
+    cols = cols or tonumber(app.sizeWidthBuffer)
+    rows = rows or tonumber(app.sizeHeightBuffer)
+    local valid, message = BoardConfig.validate(cols, rows)
+    if not valid then
+        app.sizeError = message
+        return false
+    end
+    local returnState = app.stateBeforeModal or "title"
+    app.state, app.stateBeforeModal = returnState, nil
+    requestChange("size", { cols = cols, rows = rows })
+    return true
+end
+
+local function refreshLeaderboardDimensions()
+    local byKey = {}
+    local currentKey = BoardConfig.key(app.cols, app.rows)
+    byKey[currentKey] = { cols = app.cols, rows = app.rows, key = currentKey }
+    for _, dimensions in ipairs(app.stats:listDimensions()) do
+        byKey[dimensions.key] = dimensions
+    end
+    app.leaderboardDimensions = {}
+    for _, dimensions in pairs(byKey) do
+        app.leaderboardDimensions[#app.leaderboardDimensions + 1] = dimensions
+    end
+    table.sort(app.leaderboardDimensions, function(left, right)
+        return left.cols * left.rows < right.cols * right.rows
+            or left.cols * left.rows == right.cols * right.rows and left.key < right.key
+    end)
+    app.leaderboardSizeIndex = 1
+    for index, dimensions in ipairs(app.leaderboardDimensions) do
+        if dimensions.key == currentKey then
+            app.leaderboardSizeIndex = index
+            break
+        end
+    end
+end
+
+local function cycleLeaderboardSize(delta)
+    local count = #app.leaderboardDimensions
+    app.leaderboardSizeIndex = ((app.leaderboardSizeIndex - 1 + delta) % count) + 1
+end
+
 local function openLeaderboard()
     app.leaderboardEdge = app.edgeMode
     app.leaderboardControl = app.controlMode
+    refreshLeaderboardDimensions()
     openModal("leaderboard")
 end
 
@@ -361,6 +444,7 @@ end
 local function confirmStatsReset()
     app.stats:reset()
     saveStats()
+    refreshLeaderboardDimensions()
     app.state = "leaderboard"
 end
 
@@ -394,7 +478,7 @@ local function queueDirection(directionName)
     end
 end
 
-local function chooseDirection(frameDeadline)
+local function chooseDirection()
     if app.controlMode == "manual" then
         app.turnQueued = false
         return app.queuedDirection, 0
@@ -403,9 +487,6 @@ local function chooseDirection(frameDeadline)
     local started = love.timer.getTime()
     local directionName, intervened = app.controlSession:chooseDirection(app.engine, app.controlMode, {
         aiRng = app.aiRng,
-        isBudgetExceeded = function()
-            return love.timer.getTime() >= frameDeadline
-        end,
     })
     local aiSeconds = love.timer.getTime() - started
     if intervened then
@@ -436,7 +517,7 @@ local function scaleTransform()
 end
 
 local function cellToPixel(cell)
-    return BOARD_X + (cell.x - 1) * CELL, BOARD_Y + (cell.y - 1) * CELL
+    return app.boardX + (cell.x - 1) * app.cell, app.boardY + (cell.y - 1) * app.cell
 end
 
 local function pointInRect(x, y, rectX, rectY, width, height)
@@ -457,17 +538,19 @@ end
 
 local function drawBoard()
     setColor(colors.panel)
-    love.graphics.rectangle("fill", BOARD_X - 8, BOARD_Y - 8, COLS * CELL + 16, ROWS * CELL + 16, 6, 6)
+    love.graphics.rectangle("fill", app.boardX - 8, app.boardY - 8, app.boardWidth + 16, app.boardHeight + 16, 6, 6)
     setColor(colors.border)
     love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", BOARD_X - 1, BOARD_Y - 1, COLS * CELL + 2, ROWS * CELL + 2)
+    love.graphics.rectangle("line", app.boardX - 1, app.boardY - 1, app.boardWidth + 2, app.boardHeight + 2)
     love.graphics.setLineWidth(1)
     setColor(colors.grid, 0.42)
-    for x = 0, COLS do
-        love.graphics.line(BOARD_X + x * CELL, BOARD_Y, BOARD_X + x * CELL, BOARD_Y + ROWS * CELL)
+    for x = 0, app.cols do
+        love.graphics.line(app.boardX + x * app.cell, app.boardY,
+            app.boardX + x * app.cell, app.boardY + app.boardHeight)
     end
-    for y = 0, ROWS do
-        love.graphics.line(BOARD_X, BOARD_Y + y * CELL, BOARD_X + COLS * CELL, BOARD_Y + y * CELL)
+    for y = 0, app.rows do
+        love.graphics.line(app.boardX, app.boardY + y * app.cell,
+            app.boardX + app.boardWidth, app.boardY + y * app.cell)
     end
 end
 
@@ -476,13 +559,16 @@ local function drawFood()
         return
     end
     local x, y = cellToPixel(app.engine.food)
-    local wobble = math.sin(love.timer.getTime() * 5) * 1.2
+    local wobble = math.sin(love.timer.getTime() * 5) * math.min(1.2, app.cell * 0.06)
+    local radius = math.max(2, app.cell * 0.32)
     setColor(colors.food)
-    love.graphics.circle("fill", x + CELL / 2, y + CELL / 2 + wobble, 8)
+    love.graphics.circle("fill", x + app.cell / 2, y + app.cell / 2 + wobble, radius)
     setColor(colors.gold)
-    love.graphics.rectangle("fill", x + 11, y + 2 + wobble, 3, 5)
+    love.graphics.rectangle("fill", x + app.cell * 0.46, y + app.cell * 0.08 + wobble,
+        math.max(1, app.cell * 0.12), math.max(2, app.cell * 0.2))
     setColor(colors.text, 0.55)
-    love.graphics.circle("fill", x + 9, y + 9 + wobble, 2)
+    love.graphics.circle("fill", x + app.cell * 0.38, y + app.cell * 0.38 + wobble,
+        math.max(1, app.cell * 0.08))
 end
 
 local function drawSnake()
@@ -490,19 +576,21 @@ local function drawSnake()
         local segment = app.engine.segments[index]
         local x, y = cellToPixel(segment)
         local isHead = index == app.engine.first
-        local inset = isHead and 2 or 3
+        local inset = math.max(1, math.floor(app.cell * (isHead and 0.08 or 0.12)))
         setColor(isHead and colors.snake or colors.snakeDark)
-        love.graphics.rectangle("fill", x + inset, y + inset, CELL - inset * 2, CELL - inset * 2, 5, 5)
+        love.graphics.rectangle("fill", x + inset, y + inset, app.cell - inset * 2, app.cell - inset * 2,
+            math.min(5, app.cell * 0.2), math.min(5, app.cell * 0.2))
     end
 
     local head = app.engine:head()
     local x, y = cellToPixel(head)
     local direction = Game.DIRECTIONS[app.engine.direction]
-    local eyeOffsetX = direction.x ~= 0 and direction.x * 4 or 0
-    local eyeOffsetY = direction.y ~= 0 and direction.y * 4 or 0
+    local eyeOffsetX = direction.x * app.cell * 0.14
+    local eyeOffsetY = direction.y * app.cell * 0.14
+    local eyeRadius = math.max(1, app.cell * 0.07)
     setColor(colors.background)
-    love.graphics.circle("fill", x + 8 + eyeOffsetX, y + 8 + eyeOffsetY, 2)
-    love.graphics.circle("fill", x + 16 + eyeOffsetX, y + 16 + eyeOffsetY, 2)
+    love.graphics.circle("fill", x + app.cell * 0.34 + eyeOffsetX, y + app.cell * 0.34 + eyeOffsetY, eyeRadius)
+    love.graphics.circle("fill", x + app.cell * 0.66 + eyeOffsetX, y + app.cell * 0.66 + eyeOffsetY, eyeRadius)
 end
 
 local function drawStatBox(label, value, x, accent, valueColor)
@@ -658,11 +746,13 @@ end
 
 local function drawBasicOverlay()
     if app.state == "playing" or app.state == "algorithm-picker" or app.state == "leaderboard"
-        or app.state == "seed-input" or app.state == "confirm-reset" then
+        or app.state == "seed-input" or app.state == "size-input" or app.state == "confirm-reset" then
         return
     end
     setColor(colors.background, 0.78)
-    love.graphics.rectangle("fill", BOARD_X, BOARD_Y, COLS * CELL, ROWS * CELL)
+    love.graphics.rectangle("fill", app.boardX, app.boardY, app.boardWidth, app.boardHeight)
+    setColor(colors.background, 0.94)
+    love.graphics.rectangle("fill", CONTENT_X, CONTENT_Y + 150, CONTENT_W, 104)
     local title, subtitle, prompt
     if app.state == "title" then
         title = "LUA LÖVE SNAKE"
@@ -675,7 +765,9 @@ local function drawBasicOverlay()
         if change.kind == "replay" then
             title = "REPLAY SEED " .. displaySeed(change.value, 20) .. "?"
         else
-            title = "CHANGE " .. string.upper(change.kind) .. " TO " .. string.upper(change.value) .. "?"
+            local value = change.kind == "size" and BoardConfig.key(change.value.cols, change.value.rows)
+                or tostring(change.value)
+            title = "CHANGE " .. string.upper(change.kind) .. " TO " .. string.upper(value) .. "?"
         end
         subtitle = "This run will end and its score will not count."
         prompt = "Y  RESTART     N  CANCEL"
@@ -687,34 +779,34 @@ local function drawBasicOverlay()
         subtitle = "Enter: new seed   R: replay"
     end
     setColor(app.state == "over" and colors.food or colors.text)
-    love.graphics.printf(title, BOARD_X, BOARD_Y + 170, COLS * CELL, "center")
+    love.graphics.printf(title, CONTENT_X, CONTENT_Y + 170, CONTENT_W, "center")
     setColor(colors.muted)
-    love.graphics.printf(subtitle, BOARD_X, BOARD_Y + 200, COLS * CELL, "center")
+    love.graphics.printf(subtitle, CONTENT_X, CONTENT_Y + 200, CONTENT_W, "center")
     if prompt then
         setColor(colors.gold)
-        love.graphics.printf(prompt, BOARD_X, BOARD_Y + 226, COLS * CELL, "center")
+        love.graphics.printf(prompt, CONTENT_X, CONTENT_Y + 226, CONTENT_W, "center")
     end
 end
 
 local function drawModalFrame(title, subtitle)
     setColor(colors.background, 0.93)
-    love.graphics.rectangle("fill", BOARD_X, BOARD_Y, COLS * CELL, ROWS * CELL)
+    love.graphics.rectangle("fill", CONTENT_X, CONTENT_Y, CONTENT_W, CONTENT_H)
     setColor(colors.panel)
-    love.graphics.rectangle("fill", BOARD_X + 36, BOARD_Y + 28, COLS * CELL - 72, ROWS * CELL - 56, 6, 6)
+    love.graphics.rectangle("fill", CONTENT_X + 36, CONTENT_Y + 28, CONTENT_W - 72, CONTENT_H - 56, 6, 6)
     setColor(colors.border)
-    love.graphics.rectangle("line", BOARD_X + 36.5, BOARD_Y + 28.5, COLS * CELL - 73, ROWS * CELL - 57, 6, 6)
+    love.graphics.rectangle("line", CONTENT_X + 36.5, CONTENT_Y + 28.5, CONTENT_W - 73, CONTENT_H - 57, 6, 6)
     setColor(colors.text)
-    love.graphics.print(title, BOARD_X + 58, BOARD_Y + 48)
+    love.graphics.print(title, CONTENT_X + 58, CONTENT_Y + 48)
     if subtitle then
         setColor(colors.muted)
-        love.graphics.print(subtitle, BOARD_X + 58, BOARD_Y + 70)
+        love.graphics.print(subtitle, CONTENT_X + 58, CONTENT_Y + 70)
     end
 end
 
 local function algorithmTileBounds(index)
     local column = (index - 1) % 2
     local row = math.floor((index - 1) / 2)
-    return BOARD_X + 58 + column * 310, BOARD_Y + 104 + row * 82, 292, 66
+    return CONTENT_X + 58 + column * 310, CONTENT_Y + 104 + row * 82, 292, 66
 end
 
 local function drawAlgorithmPicker()
@@ -741,9 +833,14 @@ end
 
 local function leaderboardTabBounds(kind, index)
     if kind == "edge" then
-        return BOARD_X + 58 + (index - 1) * 102, BOARD_Y + 92, 96, 26
+        return CONTENT_X + 58 + (index - 1) * 102, CONTENT_Y + 122, 96, 26
     end
-    return BOARD_X + 292 + (index - 1) * 102, BOARD_Y + 92, 96, 26
+    return CONTENT_X + 292 + (index - 1) * 102, CONTENT_Y + 122, 96, 26
+end
+
+local function leaderboardSizeButtonBounds(direction)
+    local x = direction < 0 and CONTENT_X + 456 or CONTENT_X + 584
+    return x, CONTENT_Y + 87, 34, 26
 end
 
 local function drawLeaderboardTab(label, selected, x, y, width, height)
@@ -767,7 +864,16 @@ local function drawLeaderboard()
     if app.state ~= "leaderboard" and app.state ~= "confirm-reset" then
         return
     end
-    drawModalFrame("ALGORITHM LEADERBOARD", "L or Esc closes   Delete resets all records")
+    drawModalFrame("ALGORITHM LEADERBOARD", "[ / ] changes size   L or Esc closes   Delete resets")
+    local dimensions = app.leaderboardDimensions[app.leaderboardSizeIndex]
+    setColor(colors.muted)
+    love.graphics.print("SIZE", CONTENT_X + 350, CONTENT_Y + 94)
+    for _, direction in ipairs({ -1, 1 }) do
+        local x, y, width, height = leaderboardSizeButtonBounds(direction)
+        drawLeaderboardTab(direction < 0 and "<" or ">", false, x, y, width, height)
+    end
+    setColor(colors.cyan)
+    love.graphics.printf(dimensions.key, CONTENT_X + 490, CONTENT_Y + 94, 94, "center")
     for index, edge in ipairs(Constants.EDGE_MODES) do
         local x, y, width, height = leaderboardTabBounds("edge", index)
         drawLeaderboardTab(string.upper(edge), edge == app.leaderboardEdge, x, y, width, height)
@@ -777,7 +883,7 @@ local function drawLeaderboard()
         drawLeaderboardTab(string.upper(control), control == app.leaderboardControl, x, y, width, height)
     end
 
-    local tableX, tableY = BOARD_X + 58, BOARD_Y + 136
+    local tableX, tableY = CONTENT_X + 58, CONTENT_Y + 166
     local columns = { 0, 196, 258, 334, 466, 548 }
     local labels = { "ALGORITHM", "BEST", "STEPS", "TIME@SPEED", "WINS/RUNS", "SEED" }
     setColor(colors.muted)
@@ -790,7 +896,8 @@ local function drawLeaderboard()
     local rows = app.leaderboardControl == "manual" and { { id = "player", label = "PLAYER" } } or Registry.list
     for index, algorithm in ipairs(rows) do
         local y = tableY + 30 + (index - 1) * 32
-        local record = app.stats:get(app.leaderboardEdge, app.leaderboardControl, algorithm.id)
+        local record = app.stats:get(dimensions.cols, dimensions.rows,
+            app.leaderboardEdge, app.leaderboardControl, algorithm.id)
         local steps, timing, seed = formatBestRun(record)
         setColor(index % 2 == 0 and colors.background or colors.panel, 0.52)
         love.graphics.rectangle("fill", tableX - 4, y - 5, 612, 27)
@@ -804,17 +911,17 @@ local function drawLeaderboard()
     end
 
     setColor(colors.muted)
-    love.graphics.print("DATA: " .. app.storage.mode, tableX, BOARD_Y + ROWS * CELL - 50)
+    love.graphics.print("DATA: " .. app.statsStorage.mode, tableX, CONTENT_Y + CONTENT_H - 50)
     setColor(colors.food)
-    love.graphics.printf("RESET ALL", tableX + 480, BOARD_Y + ROWS * CELL - 50, 124, "right")
+    love.graphics.printf("RESET ALL", tableX + 480, CONTENT_Y + CONTENT_H - 50, 124, "right")
 
     if app.state == "confirm-reset" then
         setColor(colors.background, 0.88)
-        love.graphics.rectangle("fill", BOARD_X + 150, BOARD_Y + 190, 420, 116, 5, 5)
+        love.graphics.rectangle("fill", CONTENT_X + 150, CONTENT_Y + 190, 420, 116, 5, 5)
         setColor(colors.food)
-        love.graphics.printf("RESET ALL LEADERBOARD DATA?", BOARD_X + 150, BOARD_Y + 220, 420, "center")
+        love.graphics.printf("RESET ALL LEADERBOARD DATA?", CONTENT_X + 150, CONTENT_Y + 220, 420, "center")
         setColor(colors.gold)
-        love.graphics.printf("Y  RESET     N  CANCEL", BOARD_X + 150, BOARD_Y + 258, 420, "center")
+        love.graphics.printf("Y  RESET     N  CANCEL", CONTENT_X + 150, CONTENT_Y + 258, 420, "center")
     end
 end
 
@@ -823,7 +930,7 @@ local function drawSeedInput()
         return
     end
     drawModalFrame("SET RUN SEED", "Empty input creates a random seed")
-    local x, y, width, height = BOARD_X + 120, BOARD_Y + 190, 480, 54
+    local x, y, width, height = CONTENT_X + 120, CONTENT_Y + 190, 480, 54
     setColor(colors.background)
     love.graphics.rectangle("fill", x, y, width, height, 4, 4)
     setColor(colors.cyan)
@@ -832,12 +939,56 @@ local function drawSeedInput()
     love.graphics.print(app.seedBuffer .. "_", x + 14, y + 19)
     setColor(colors.muted)
     love.graphics.printf("ASCII letters, numbers, - and _   Enter: apply   Esc: cancel",
-        BOARD_X + 80, BOARD_Y + 270, COLS * CELL - 160, "center")
+        CONTENT_X + 80, CONTENT_Y + 270, CONTENT_W - 160, "center")
+end
+
+local function sizePresetBounds(index)
+    return CONTENT_X + 58 + (index - 1) * 122, CONTENT_Y + 118, 112, 42
+end
+
+local function sizeFieldBounds(field)
+    return field == "width" and CONTENT_X + 100 or CONTENT_X + 400, CONTENT_Y + 218, 200, 54
+end
+
+local function sizeActionBounds(action)
+    return action == "apply" and CONTENT_X + 220 or CONTENT_X + 380, CONTENT_Y + 366, 120, 38
+end
+
+local function drawSizeInput()
+    if app.state ~= "size-input" then
+        return
+    end
+    drawModalFrame("SET BOARD SIZE", "Choose a preset or enter 5-50; at least one side must be even")
+    for index, preset in ipairs(BoardConfig.PRESETS) do
+        local x, y, width, height = sizePresetBounds(index)
+        local selected = preset.cols == app.cols and preset.rows == app.rows
+        drawLeaderboardTab(BoardConfig.key(preset.cols, preset.rows), selected, x, y, width, height)
+    end
+    for _, field in ipairs({ "width", "height" }) do
+        local x, y, width, height = sizeFieldBounds(field)
+        setColor(colors.muted)
+        love.graphics.print(string.upper(field), x, y - 24)
+        setColor(colors.background)
+        love.graphics.rectangle("fill", x, y, width, height, 4, 4)
+        setColor(app.sizeField == field and colors.cyan or colors.border)
+        love.graphics.rectangle("line", x + 0.5, y + 0.5, width - 1, height - 1, 4, 4)
+        setColor(colors.text)
+        local value = field == "width" and app.sizeWidthBuffer or app.sizeHeightBuffer
+        love.graphics.printf(value .. (app.sizeField == field and "_" or ""), x, y + 18, width, "center")
+    end
+    setColor(app.sizeError and colors.food or colors.gold)
+    love.graphics.printf(app.sizeError or "TAB  SWITCH FIELD     ENTER  APPLY     ESC  CANCEL",
+        CONTENT_X + 58, CONTENT_Y + 314, CONTENT_W - 116, "center")
+    for _, action in ipairs({ "apply", "cancel" }) do
+        local x, y, width, height = sizeActionBounds(action)
+        drawLeaderboardTab(string.upper(action), action == "apply", x, y, width, height)
+    end
 end
 
 local function drawFooter()
     setColor(colors.muted)
-    love.graphics.print("WASD / ARROWS  TURN    G  AI    L  BOARD    F2  SEED", 30, BASE_H - 42)
+    love.graphics.print("WASD / ARROWS  TURN    G  AI    L  SCORES    B  SIZE "
+        .. BoardConfig.key(app.cols, app.rows), 30, BASE_H - 42)
     love.graphics.print("- / +  SPEED    R  REPLAY    P / ESC  PAUSE", 30, BASE_H - 21)
     local function down(key)
         return love.keyboard.isScancodeDown(key) and "1" or "0"
@@ -858,6 +1009,7 @@ function love.load()
     love.graphics.setDefaultFilter("nearest", "nearest")
     love.keyboard.setTextInput(false)
     love.math.setRandomSeed(os.time())
+    loadSettings()
     loadStats()
     app.seedText = randomSeedText()
     resetEngine()
@@ -879,7 +1031,7 @@ function love.update(dt)
             break
         end
         app.logicTimer = app.logicTimer - app.stepInterval
-        local directionName, aiSeconds = chooseDirection(frameDeadline)
+        local directionName, aiSeconds = chooseDirection()
         local result = app.engine:step(directionName)
         steps = steps + 1
         app.performance.ticks = app.performance.ticks + 1
@@ -919,6 +1071,7 @@ function love.draw()
     drawAlgorithmPicker()
     drawLeaderboard()
     drawSeedInput()
+    drawSizeInput()
     drawFooter()
     love.graphics.pop()
 end
@@ -944,6 +1097,30 @@ local function handleSeedKey(key)
     end
 end
 
+local function handleSizeKey(key)
+    if key == "escape" then
+        closeModal()
+        return
+    elseif key == "return" or key == "kpenter" then
+        submitSize()
+        return
+    elseif key == "tab" or key == "left" or key == "right" then
+        app.sizeField = app.sizeField == "width" and "height" or "width"
+        return
+    end
+    local bufferName = app.sizeField == "width" and "sizeWidthBuffer" or "sizeHeightBuffer"
+    if key == "backspace" then
+        app[bufferName] = app[bufferName]:sub(1, -2)
+        app.sizeError = nil
+        return
+    end
+    local digit = key:match("^(%d)$") or key:match("^kp(%d)$")
+    if digit and #app[bufferName] < 2 then
+        app[bufferName] = app[bufferName] .. digit
+        app.sizeError = nil
+    end
+end
+
 local function handleLeaderboardKey(key)
     if key == "escape" or key == "l" then
         closeModal()
@@ -959,6 +1136,10 @@ local function handleLeaderboardKey(key)
         end
     elseif key == "up" or key == "down" then
         app.leaderboardEdge = app.leaderboardEdge == "walls" and "wrap" or "walls"
+    elseif key == "[" then
+        cycleLeaderboardSize(-1)
+    elseif key == "]" then
+        cycleLeaderboardSize(1)
     end
 end
 
@@ -966,6 +1147,9 @@ function love.keypressed(key, scancode)
     app.inputEvent = "DOWN  key=" .. tostring(key) .. " scan=" .. tostring(scancode)
     if app.state == "seed-input" then
         handleSeedKey(key)
+        return
+    elseif app.state == "size-input" then
+        handleSizeKey(key)
         return
     elseif app.state == "confirm-reset" then
         if key == "y" then
@@ -999,6 +1183,9 @@ function love.keypressed(key, scancode)
 
     if key == "l" or scancode == "l" then
         openLeaderboard()
+        return
+    elseif key == "b" or scancode == "b" then
+        openSizeInput()
         return
     elseif key == "f2" then
         openSeedInput()
@@ -1077,6 +1264,13 @@ local function handleModalClick(x, y)
         end
         return true
     elseif app.state == "leaderboard" then
+        for _, direction in ipairs({ -1, 1 }) do
+            local buttonX, buttonY, width, height = leaderboardSizeButtonBounds(direction)
+            if pointInRect(x, y, buttonX, buttonY, width, height) then
+                cycleLeaderboardSize(direction)
+                return true
+            end
+        end
         for index, edge in ipairs(Constants.EDGE_MODES) do
             local tabX, tabY, width, height = leaderboardTabBounds("edge", index)
             if pointInRect(x, y, tabX, tabY, width, height) then
@@ -1091,8 +1285,31 @@ local function handleModalClick(x, y)
                 return true
             end
         end
-        if pointInRect(x, y, BOARD_X + 530, BOARD_Y + ROWS * CELL - 66, 132, 34) then
+        if pointInRect(x, y, CONTENT_X + 530, CONTENT_Y + CONTENT_H - 66, 132, 34) then
             requestStatsReset()
+        end
+        return true
+    elseif app.state == "size-input" then
+        for index, preset in ipairs(BoardConfig.PRESETS) do
+            local presetX, presetY, width, height = sizePresetBounds(index)
+            if pointInRect(x, y, presetX, presetY, width, height) then
+                submitSize(preset.cols, preset.rows)
+                return true
+            end
+        end
+        for _, field in ipairs({ "width", "height" }) do
+            local fieldX, fieldY, width, height = sizeFieldBounds(field)
+            if pointInRect(x, y, fieldX, fieldY, width, height) then
+                app.sizeField = field
+                return true
+            end
+        end
+        for _, action in ipairs({ "apply", "cancel" }) do
+            local actionX, actionY, width, height = sizeActionBounds(action)
+            if pointInRect(x, y, actionX, actionY, width, height) then
+                if action == "apply" then submitSize() else closeModal() end
+                return true
+            end
         end
         return true
     elseif app.state == "seed-input" or app.state == "confirm-reset" then

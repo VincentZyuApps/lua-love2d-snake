@@ -29,6 +29,7 @@ class TriggerTests(unittest.TestCase):
     def test_exact_tokens(self) -> None:
         self.assertTrue(trigger.contains_token("ship [build-action]", "build-action"))
         self.assertTrue(trigger.contains_token("[build-release]\nnotes", "build-release"))
+        self.assertTrue(trigger.contains_token("compare [run-championship]", "run-championship"))
 
     def test_rejects_unbracketed_and_wrong_case(self) -> None:
         self.assertFalse(trigger.contains_token("build-action", "build-action"))
@@ -69,6 +70,12 @@ class NamingTests(unittest.TestCase):
         files = sorted((REPOSITORY_ROOT / "src" / "ai").glob("*.lua"))
         invalid = [path.name for path in files if not pattern.fullmatch(path.name)]
         self.assertEqual(invalid, [])
+
+    def test_agent_guide_stays_compact_and_bilingual(self) -> None:
+        lines = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines()
+        self.assertLessEqual(len(lines), 50)
+        content_lines = [line for line in lines if line.strip()]
+        self.assertTrue(all("/ " in line for line in content_lines))
 
 
 if __name__ == "__main__":

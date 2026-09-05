@@ -1,10 +1,16 @@
+local BoardConfig = require("src.board")
+
 local Constants = {
     BASE_WIDTH = 960,
     BASE_HEIGHT = 720,
     CELL_SIZE = 24,
-    COLS = 30,
-    ROWS = 21,
+    COLS = BoardConfig.DEFAULT_COLS,
+    ROWS = BoardConfig.DEFAULT_ROWS,
     BOARD_Y = 132,
+    BOARD_AREA_X = 120,
+    BOARD_AREA_Y = 132,
+    BOARD_AREA_WIDTH = 720,
+    BOARD_AREA_HEIGHT = 504,
     MAX_STEPS_PER_FRAME = 2048,
     AI_BUDGET_SECONDS = 0.010,
     DEFAULT_SPEED_INDEX = 2,

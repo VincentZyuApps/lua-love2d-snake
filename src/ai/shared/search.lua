@@ -3,12 +3,16 @@ local Grid = require("src.ai.shared.grid")
 
 local Search = {}
 
-local function reconstruct(world, parents, targetKey)
+local function reconstruct(parents, targetKey)
     local path = {}
     local key = targetKey
     while parents[key] do
-        table.insert(path, 1, parents[key].direction)
+        path[#path + 1] = parents[key].direction
         key = parents[key].previous
+    end
+    for left = 1, math.floor(#path / 2) do
+        local right = #path - left + 1
+        path[left], path[right] = path[right], path[left]
     end
     return path
 end
@@ -25,13 +29,13 @@ local function canVisit(world, x, y, targetKey)
     return not Grid.contains(world, x, y)
 end
 
-function Search.bfs(world, target)
+local function breadthFirst(world, target, buildPath)
     if not target then
         return nil
     end
     local start = Grid.head(world)
     if start.x == target.x and start.y == target.y then
-        return {}
+        return buildPath and {} or true
     end
 
     local startKey = Game.cellKey(start.x, start.y, world.cols)
@@ -39,7 +43,7 @@ function Search.bfs(world, target)
     local queue = { { x = start.x, y = start.y } }
     local first = 1
     local visited = { [startKey] = true }
-    local parents = {}
+    local parents = buildPath and {} or nil
 
     while first <= #queue do
         local current = queue[first]
@@ -52,12 +56,14 @@ function Search.bfs(world, target)
                 if (not outside or world.edgeMode == "wrap") and not visited[key]
                     and canVisit(world, x, y, targetKey) then
                     visited[key] = true
-                    parents[key] = {
-                        previous = Game.cellKey(current.x, current.y, world.cols),
-                        direction = directionName,
-                    }
+                    if buildPath then
+                        parents[key] = {
+                            previous = Game.cellKey(current.x, current.y, world.cols),
+                            direction = directionName,
+                        }
+                    end
                     if key == targetKey then
-                        return reconstruct(world, parents, targetKey)
+                        return buildPath and reconstruct(parents, targetKey) or true
                     end
                     queue[#queue + 1] = { x = x, y = y }
                 end
@@ -65,6 +71,56 @@ function Search.bfs(world, target)
         end
     end
     return nil
+end
+
+function Search.bfs(world, target)
+    return breadthFirst(world, target, true)
+end
+
+function Search.reachable(world, target)
+    return breadthFirst(world, target, false) == true
+end
+
+local function comesBefore(left, right)
+    return left.f < right.f
+        or left.f == right.f and (left.g < right.g
+            or left.g == right.g and left.serial < right.serial)
+end
+
+local function heapPush(heap, node)
+    local index = #heap + 1
+    while index > 1 do
+        local parent = math.floor(index / 2)
+        if not comesBefore(node, heap[parent]) then
+            break
+        end
+        heap[index] = heap[parent]
+        index = parent
+    end
+    heap[index] = node
+end
+
+local function heapPop(heap)
+    local root = heap[1]
+    local last = table.remove(heap)
+    if #heap == 0 then
+        return root
+    end
+
+    local index = 1
+    while index * 2 <= #heap do
+        local child = index * 2
+        if child + 1 <= #heap and comesBefore(heap[child + 1], heap[child]) then
+            child = child + 1
+        end
+        if not comesBefore(heap[child], last) then
+            break
+        end
+        heap[index] = heap[child]
+        index = child
+    end
+    heap[index] = last
+    return root
 end
 
 function Search.astar(world, target)
@@ -78,23 +134,25 @@ function Search.astar(world, target)
 
     local startKey = Game.cellKey(start.x, start.y, world.cols)
     local targetKey = Game.cellKey(target.x, target.y, world.cols)
-    local open = { { x = start.x, y = start.y, key = startKey, g = 0, f = Grid.distance(world, start, target) } }
+    local open = {}
+    local serial = 1
+    heapPush(open, {
+        x = start.x,
+        y = start.y,
+        key = startKey,
+        g = 0,
+        f = Grid.distance(world, start, target),
+        serial = serial,
+    })
     local costs = { [startKey] = 0 }
     local parents, closed = {}, {}
 
     while #open > 0 do
-        local bestIndex = 1
-        for index = 2, #open do
-            if open[index].f < open[bestIndex].f
-                or (open[index].f == open[bestIndex].f and open[index].g < open[bestIndex].g) then
-                bestIndex = index
-            end
-        end
-        local current = table.remove(open, bestIndex)
+        local current = heapPop(open)
         if not closed[current.key] then
             closed[current.key] = true
             if current.key == targetKey then
-                return reconstruct(world, parents, targetKey)
+                return reconstruct(parents, targetKey)
             end
             for _, directionName in ipairs(Grid.order) do
                 if not (current.key == startKey and directionName == Game.DIRECTIONS[world.direction].opposite) then
@@ -107,13 +165,15 @@ function Search.astar(world, target)
                         if costs[key] == nil or cost < costs[key] then
                             costs[key] = cost
                             parents[key] = { previous = current.key, direction = directionName }
-                            open[#open + 1] = {
+                            serial = serial + 1
+                            heapPush(open, {
                                 x = x,
                                 y = y,
                                 key = key,
                                 g = cost,
                                 f = cost + Grid.distance(world, { x = x, y = y }, target),
-                            }
+                                serial = serial,
+                            })
                         end
                     end
                 end
@@ -125,8 +185,7 @@ end
 
 function Search.tailReachable(world)
     local tail = Grid.tail(world)
-    local path = tail and Search.bfs(world, tail) or nil
-    return path ~= nil
+    return tail ~= nil and Search.reachable(world, tail)
 end
 
 return Search

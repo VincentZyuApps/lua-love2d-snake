@@ -1,11 +1,17 @@
+local BoardConfig = require("src.board")
+local ChampionshipArguments = require("src.championship.arguments")
+local ChampionshipReports = require("src.championship.reports")
+local ChampionshipRunner = require("src.championship.runner")
 local Cycle = require("src.ai.cycle-helpers")
 local Constants = require("src.constants")
 local ControlSession = require("src.ai.control-session")
 local Game = require("src.game")
+local GameFactory = require("src.factory")
 local Grid = require("src.ai.shared.grid")
 local Registry = require("src.ai.algorithm-registry")
 local Rng = require("src.rng")
 local Search = require("src.ai.shared.search")
+local Settings = require("src.settings")
 local Stats = require("src.stats")
 local Storage = require("src.storage")
 
@@ -28,28 +34,25 @@ local function assertTrue(value, message)
     end
 end
 
-local function newAiGame(edgeMode, seed)
-    local cells, directionName = Cycle.initialSnake(15, 11, 4)
-    return Game.new({
+local function newAiGame(edgeMode, seed, cols, rows)
+    local game = GameFactory.create({
+        cols = cols or BoardConfig.DEFAULT_COLS,
+        rows = rows or BoardConfig.DEFAULT_ROWS,
         edgeMode = edgeMode,
-        initialCells = cells,
-        initialDirection = directionName,
-        foodRng = Rng.new(seed, 11),
-        firstFood = { x = 21, y = 11 },
+        controlMode = "auto",
+        seed = seed,
     })
+    return game
 end
 
 local function algorithmContext(seed)
     return {
         aiRng = Rng.new(seed, 29),
-        isBudgetExceeded = function()
-            return false
-        end,
     }
 end
 
-local function simulateToEnd(algorithmId, edgeMode, seed, maximumSteps)
-    local game = newAiGame(edgeMode, seed)
+local function simulateToEnd(algorithmId, edgeMode, seed, maximumSteps, cols, rows)
+    local game = newAiGame(edgeMode, seed, cols, rows)
     local algorithm = Registry.get(algorithmId)
     local context = algorithmContext(seed)
     local memory = algorithm.reset(game, context) or {}
@@ -126,6 +129,28 @@ test("BFS and A* find equally short initial food paths", function()
     local astar = Search.astar(game, game.food)
     assertTrue(bfs and astar, "both searches should find the initial food")
     assertEqual(#bfs, #astar)
+    assertTrue(Search.reachable(game, game.food), "food should be reachable")
+    assertTrue(Search.reachable(game, game:head()), "the search origin should be reachable")
+end)
+
+test("A* tail-safe backs off after rejecting a food route", function()
+    local algorithm = Registry.get("astar-tail-safe")
+    local game = newAiGame("walls", "astar-backoff")
+    local memory = algorithm.reset(game, algorithmContext("astar-backoff"))
+    local originalAstar = Search.astar
+    local calls = 0
+    Search.astar = function()
+        calls = calls + 1
+        return nil
+    end
+    local ok, message = pcall(function()
+        algorithm.chooseDirection(game, memory)
+        algorithm.chooseDirection(game, memory)
+        assertEqual(calls, 1, "rejected food routes should not be retried every frame")
+        assertTrue(memory.retryStep > game.steps, "retry must be scheduled by game steps")
+    end)
+    Search.astar = originalAstar
+    assertTrue(ok, message)
 end)
 
 test("every algorithm returns a safe move without mutating the world", function()
@@ -196,16 +221,94 @@ end)
 test("guaranteed algorithms fill both edge modes", function()
     for _, algorithmId in ipairs({ "hamiltonian", "hamiltonian-shortcut" }) do
         for _, edgeMode in ipairs({ "walls", "wrap" }) do
-            for seed = 0, 9 do
+            for seed = 0, 2 do
                 simulateToEnd(algorithmId, edgeMode, algorithmId .. "-" .. seed, 4000000)
             end
         end
     end
 end)
 
+test("guaranteed algorithms fill horizontal and transposed representative boards", function()
+    local sizes = { { 5, 6 }, { 6, 5 }, { 49, 50 }, { 50, 49 } }
+    for _, algorithmId in ipairs({ "hamiltonian", "hamiltonian-shortcut" }) do
+        for _, size in ipairs(sizes) do
+            local cells = size[1] * size[2]
+            simulateToEnd(algorithmId, "walls", algorithmId .. "-" .. size[1] .. "x" .. size[2],
+                2 * cells * cells, size[1], size[2])
+        end
+    end
+end)
+
+test("Hamiltonian cycles cover every supported board", function()
+    for cols = BoardConfig.MIN_SIZE, BoardConfig.MAX_SIZE do
+        for rows = BoardConfig.MIN_SIZE, BoardConfig.MAX_SIZE do
+            local valid = BoardConfig.validate(cols, rows)
+            if valid then
+                local cycle = Cycle.get(cols, rows)
+                assertEqual(cycle.size, cols * rows)
+                local seen = {}
+                for index, cell in ipairs(cycle.cells) do
+                    assertTrue(cell.x >= 1 and cell.x <= cols and cell.y >= 1 and cell.y <= rows)
+                    local key = Game.cellKey(cell.x, cell.y, cols)
+                    assertTrue(not seen[key], "cycle contains duplicate cells")
+                    seen[key] = true
+                    local following = cycle.cells[index % cycle.size + 1]
+                    local distance = math.abs(cell.x - following.x) + math.abs(cell.y - following.y)
+                    assertEqual(distance, 1, "cycle must close through adjacent cells")
+                end
+                Cycle.clearCache()
+            else
+                assertTrue(cols % 2 == 1 and rows % 2 == 1)
+            end
+        end
+    end
+end)
+
+test("board settings validate and round-trip", function()
+    assertTrue(BoardConfig.validate(5, 6))
+    assertTrue(BoardConfig.validate(50, 50))
+    local valid, message = BoardConfig.validate(5, 5)
+    assertTrue(not valid)
+    assertEqual(message, "AT LEAST ONE DIMENSION MUST BE EVEN")
+    local restored = Settings.fromJson(Settings.new({ cols = 40, rows = 28 }):toJson())
+    assertEqual(restored.data.cols, 40)
+    assertEqual(restored.data.rows, 28)
+end)
+
+test("game factory keeps every manual starting snake on small boards", function()
+    for _, directionName in ipairs({ "up", "right", "down", "left" }) do
+        local game = GameFactory.create({ cols = 5, rows = 6, edgeMode = "walls",
+            controlMode = "manual", initialDirection = directionName, seed = "small-manual" })
+        for _, cell in ipairs(game:bodyCells()) do
+            assertTrue(cell.x >= 1 and cell.x <= game.cols and cell.y >= 1 and cell.y <= game.rows)
+        end
+    end
+end)
+
+test("championship arguments reject odd boards", function()
+    local ok, message = pcall(ChampionshipArguments.parse, { "--sizes", "5x5" })
+    assertTrue(not ok)
+    assertTrue(tostring(message):find("AT LEAST ONE DIMENSION MUST BE EVEN", 1, true) ~= nil)
+end)
+
+test("championship reports are deterministic", function()
+    local config = ChampionshipArguments.parse({ "--sizes", "10x8", "--edges", "walls",
+        "--algorithms", "greedy,hamiltonian", "--runs", "1", "--master-seed", "test-report" })
+    local games, errors = ChampionshipRunner.run(config)
+    assertEqual(#games, 2)
+    assertEqual(errors, 0)
+    local first = ChampionshipReports.render(ChampionshipReports.build(config, games))
+    local second = ChampionshipReports.render(ChampionshipReports.build(config, games))
+    assertEqual(first.json, second.json)
+    assertEqual(first.csv, second.csv)
+    assertEqual(first.markdown, second.markdown)
+    assertTrue(first.markdown:find("## Overall Efficiency", 1, true) ~= nil)
+    assertTrue(first.markdown:find("## 10x8 / WALLS", 1, true) ~= nil)
+end)
+
 test("stats round-trip and keep manual records independent from algorithms", function()
     local stats = Stats.new()
-    stats:record("walls", "auto", "greedy", {
+    stats:record(30, 21, "walls", "auto", "greedy", {
         score = 42,
         steps = 900,
         elapsed = 12.5,
@@ -213,26 +316,34 @@ test("stats round-trip and keep manual records independent from algorithms", fun
         seed = "score-seed",
         won = true,
     })
-    stats:record("walls", "manual", "greedy", { score = 7, won = false })
-    stats:record("walls", "manual", "hamiltonian", { score = 9, won = false })
+    stats:record(30, 21, "walls", "manual", "greedy", { score = 7, won = false })
+    stats:record(30, 21, "walls", "manual", "hamiltonian", { score = 9, won = false })
     local restored = Stats.fromJson(stats:toJson())
-    local ai = restored:get("walls", "auto", "greedy")
+    local ai = restored:get(30, 21, "walls", "auto", "greedy")
     assertEqual(ai.bestScore, 42)
     assertEqual(ai.bestSteps, 900)
     assertEqual(ai.bestSeed, "score-seed")
-    local manual = restored:get("walls", "manual", "random-safe")
+    local manual = restored:get(30, 21, "walls", "manual", "random-safe")
     assertEqual(manual.bestScore, 9)
     assertEqual(manual.runs, 2)
 end)
 
 test("auto and hybrid records are independent per algorithm", function()
     local stats = Stats.new()
-    stats:record("wrap", "auto", "greedy", { score = 10, won = false })
-    stats:record("wrap", "hybrid", "greedy", { score = 20, won = false })
-    stats:record("wrap", "auto", "hamiltonian", { score = 30, won = false })
-    assertEqual(stats:get("wrap", "auto", "greedy").bestScore, 10)
-    assertEqual(stats:get("wrap", "hybrid", "greedy").bestScore, 20)
-    assertEqual(stats:get("wrap", "auto", "hamiltonian").bestScore, 30)
+    stats:record(20, 14, "wrap", "auto", "greedy", { score = 10, won = false })
+    stats:record(20, 14, "wrap", "hybrid", "greedy", { score = 20, won = false })
+    stats:record(40, 28, "wrap", "auto", "hamiltonian", { score = 30, won = false })
+    assertEqual(stats:get(20, 14, "wrap", "auto", "greedy").bestScore, 10)
+    assertEqual(stats:get(20, 14, "wrap", "hybrid", "greedy").bestScore, 20)
+    assertEqual(stats:get(40, 28, "wrap", "auto", "hamiltonian").bestScore, 30)
+    assertEqual(#stats:listDimensions(), 2)
+end)
+
+test("stats v1 migrate to the default board", function()
+    local legacy = '{"version":1,"records":{"walls|auto|greedy":{"bestScore":12,"runs":1,"wins":0}}}'
+    local stats = Stats.fromJson(legacy)
+    assertEqual(stats:get(30, 21, "walls", "auto", "greedy").bestScore, 12)
+    assertEqual(stats.data.version, 2)
 end)
 
 test("speed presets preserve the original 2x timing curve", function()

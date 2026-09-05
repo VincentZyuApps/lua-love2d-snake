@@ -39,28 +39,41 @@ local function safeFoodPath(world)
     return nil
 end
 
+local function retryDelay(world)
+    return math.max(4, math.floor(math.sqrt(world.cols * world.rows)))
+end
+
 return {
     id = "astar-tail-safe",
     label = "A* TAIL SAFE",
     tier = "CAUTIOUS",
     description = "Accepts a food path only when the simulated tail remains reachable.",
     reset = function()
-        return { path = nil, foodKey = nil }
+        return { path = nil, tailPath = nil, foodKey = nil, retryStep = 0 }
     end,
     chooseDirection = function(world, memory)
         local currentFoodKey = foodKey(world)
         local nextDirection = memory.path and memory.path[1] or nil
-        if memory.foodKey ~= currentFoodKey or not nextDirection or not Grid.isSafe(world, nextDirection) then
+        local foodChanged = memory.foodKey ~= currentFoodKey
+        local routeInvalid = nextDirection and not Grid.isSafe(world, nextDirection)
+        local retryDue = not memory.path and world.steps >= (memory.retryStep or 0)
+        if foodChanged or routeInvalid or retryDue then
             memory.path = safeFoodPath(world)
             memory.foodKey = currentFoodKey
+            memory.tailPath = nil
+            memory.retryStep = memory.path and 0 or world.steps + retryDelay(world)
         end
         if memory.path and #memory.path > 0 and Grid.isSafe(world, memory.path[1]) then
             return table.remove(memory.path, 1)
         end
 
-        local tailPath = Search.bfs(world, world:tail())
-        if tailPath and tailPath[1] and Grid.isSafe(world, tailPath[1]) then
-            return tailPath[1]
+        local tailDirection = memory.tailPath and memory.tailPath[1] or nil
+        if not tailDirection or not Grid.isSafe(world, tailDirection) then
+            memory.tailPath = Search.bfs(world, world:tail())
+            tailDirection = memory.tailPath and memory.tailPath[1] or nil
+        end
+        if tailDirection and Grid.isSafe(world, tailDirection) then
+            return table.remove(memory.tailPath, 1)
         end
         return safestFallback(world) or world.direction
     end,

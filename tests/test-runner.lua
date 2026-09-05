@@ -51,6 +51,19 @@ local function algorithmContext(seed)
     }
 end
 
+test("championship CLI scripts compile under Lua 5.1", function()
+    local scripts = {
+        "scripts/championship/championship-matrix.lua",
+        "scripts/championship/run-championship.lua",
+    }
+    for _, path in ipairs(scripts) do
+        local chunk, compileError = loadfile(path)
+        if not chunk then
+            error(path .. " failed to compile: " .. tostring(compileError))
+        end
+    end
+end)
+
 local function simulateToEnd(algorithmId, edgeMode, seed, maximumSteps, cols, rows)
     local game = newAiGame(edgeMode, seed, cols, rows)
     local algorithm = Registry.get(algorithmId)

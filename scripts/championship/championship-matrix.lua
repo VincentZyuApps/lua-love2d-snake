@@ -11,4 +11,4 @@ for _, dimensions in ipairs(config.sizes) do
             dimensions.key, dimensions.cols, dimensions.rows, edge)
     end
 end
-print('{"include":[' .. table.concat(entries, ",") .. "]}')
+print('{"include":[' .. table.concat(entries, ",") .. "]}")

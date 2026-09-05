@@ -1,0 +1,166 @@
+name: AI Championship
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      sizes:
+        description: Comma-separated board sizes
+        type: string
+        default: 20x14,30x21,40x28
+      edges:
+        description: Comma-separated edge modes
+        type: string
+        default: walls,wrap
+      algorithms:
+        description: all or comma-separated algorithm IDs
+        type: string
+        default: all
+      runs:
+        description: Seeds per size, edge, and algorithm
+        type: string
+        default: "10"
+      master_seed:
+        description: Deterministic master seed
+        type: string
+        default: snake-championship-v1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: championship-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.trigger.outputs.should_run }}
+      matrix: ${{ steps.config.outputs.matrix }}
+      algorithms: ${{ steps.config.outputs.algorithms }}
+      runs: ${{ steps.config.outputs.runs }}
+      master_seed: ${{ steps.config.outputs.master_seed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Match the championship trigger
+        id: trigger
+        shell: bash
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
+            python scripts/ci/ci-trigger.py --message "$COMMIT_MESSAGE" --token run-championship; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and validate the scenario matrix
+        id: config
+        if: steps.trigger.outputs.should_run == 'true'
+        shell: bash
+        env:
+          SIZES: ${{ inputs.sizes || '20x14,30x21,40x28' }}
+          EDGES: ${{ inputs.edges || 'walls,wrap' }}
+          ALGORITHMS: ${{ inputs.algorithms || 'all' }}
+          RUNS: ${{ inputs.runs || '10' }}
+          MASTER_SEED: ${{ inputs.master_seed || 'snake-championship-v1' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1
+          lua5.1 tests/test-runner.lua
+          MATRIX="$(lua5.1 scripts/championship/championship-matrix.lua \
+            --sizes "$SIZES" --edges "$EDGES" --algorithms "$ALGORITHMS" \
+            --runs "$RUNS" --master-seed "$MASTER_SEED")"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "algorithms=$ALGORITHMS" >> "$GITHUB_OUTPUT"
+          echo "runs=$RUNS" >> "$GITHUB_OUTPUT"
+          echo "master_seed=$MASTER_SEED" >> "$GITHUB_OUTPUT"
+
+  championship:
+    needs: prepare
+    if: needs.prepare.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1
+
+      - name: Run deterministic AUTO games
+        env:
+          ALGORITHMS: ${{ needs.prepare.outputs.algorithms }}
+          RUNS: ${{ needs.prepare.outputs.runs }}
+          MASTER_SEED: ${{ needs.prepare.outputs.master_seed }}
+        run: >-
+          lua5.1 scripts/championship/run-championship.lua
+          --sizes "${{ matrix.size }}"
+          --edges "${{ matrix.edge }}"
+          --algorithms "$ALGORITHMS"
+          --runs "$RUNS"
+          --master-seed "$MASTER_SEED"
+          --output-dir build/championship
+
+      - name: Upload scenario report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: championship-shard-${{ matrix.size }}-${{ matrix.edge }}
+          path: build/championship/championship.json
+          retention-days: 1
+          if-no-files-found: error
+
+  aggregate:
+    needs: [prepare, championship]
+    if: always() && needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: championship-shard-*
+          path: build/shards
+
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1
+
+      - name: Merge deterministic reports
+        id: merge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          find build/shards -type f -name championship.json | LC_ALL=C sort > build/championship-manifest.txt
+          lua5.1 scripts/championship/run-championship.lua \
+            --merge-manifest build/championship-manifest.txt \
+            --output-dir build/championship
+
+      - name: Add report to the job summary
+        if: always() && hashFiles('build/championship/championship.md') != ''
+        run: cat build/championship/championship.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload championship reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lua-love2d-snake-championship
+          path: build/championship/championship.*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Fail after preserving error reports
+        if: steps.merge.outcome != 'success' || needs.championship.result != 'success'
+        run: exit 1

@@ -31,6 +31,8 @@ jobs:
       should_build: ${{ steps.trigger.outputs.should_build }}
       should_release: ${{ steps.trigger.outputs.should_release }}
       version: ${{ steps.version.outputs.version }}
+      recorded_at_utc: ${{ steps.version.outputs.recorded_at_utc }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v7
 
@@ -72,6 +74,8 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "recorded_at_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
   game-package:
     needs: prepare
@@ -255,6 +259,32 @@ jobs:
           name: native-macos-universal
           path: release-files
 
+      - name: Render game release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ needs.prepare.outputs.version }}"
+          if [[ "${{ needs.prepare.outputs.should_release }}" == "true" ]]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body \
+              > release-changes.md
+          else
+            printf '%s\n' '- Artifact validation; no GitHub Release was created. / 仅验证 Artifact，未创建 GitHub Release。' \
+              > release-changes.md
+          fi
+          python scripts/ci/ci-render-release.py game \
+            --template .github/release-templates/game-release.md \
+            --output release-body.md \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "$TAG" \
+            --sha "$GITHUB_SHA" \
+            --recorded-at-utc "${{ needs.prepare.outputs.recorded_at_utc }}" \
+            --workflow-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --changes-file release-changes.md
+
       - name: Generate SHA-256 checksums
         shell: bash
         run: |
@@ -266,7 +296,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lua-love2d-snake-v${{ needs.prepare.outputs.version }}
-          path: release-files/*
+          path: |
+            release-files/*
+            release-body.md
           retention-days: 7
           if-no-files-found: error
 
@@ -285,5 +317,5 @@ jobs:
           gh release create "$TAG" release-files/* \
             --target "$GITHUB_SHA" \
             --title "Lua LÖVE Snake ${TAG}" \
-            --generate-notes \
+            --notes-file release-body.md \
             --latest

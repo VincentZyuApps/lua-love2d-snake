@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 
 
-ALLOWED_TOKENS = {"build-action", "build-release", "run-championship"}
+ALLOWED_TOKENS = {
+    "build-action",
+    "build-release",
+    "release-championship",
+    "run-championship",
+}
 
 
 def contains_token(message: str, token: str) -> bool:

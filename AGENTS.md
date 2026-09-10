@@ -31,5 +31,10 @@
 
 - 提交格式为 `type(scope): 中文说明`。/ Format commits as `type(scope): Chinese description`.
 - 每笔提交添加 `Co-authored-by: Codex <codex@openai.com>`。/ Add `Co-authored-by: Codex <codex@openai.com>` to every commit.
-- `[build-action]` 构建跨平台产物，`[build-release]` 发布版本，`[run-championship]` 运行锦标赛。/ `[build-action]` builds cross-platform artifacts, `[build-release]` publishes a version, and `[run-championship]` runs the championship.
-- 发布前确认 VERSION、工作树、测试、标签和 Release 状态。/ Verify VERSION, worktree, tests, tag, and Release state before publishing.
+- 功能与 CI 修改先正常提交且不带触发词，验证任务再用独立空提交触发。/ Commit feature and CI changes without trigger tokens, then use separate empty commits for validation jobs.
+- `[build-action]` 生成游戏 Artifact，`[build-release]` 发布 Latest 游戏 Release。/ `[build-action]` creates game artifacts; `[build-release]` publishes the Latest game release.
+- `[run-championship]` 生成报告 Artifact，`[release-championship]` 发布非 Latest、非 Pre-release 的独立报告。/ `[run-championship]` creates report artifacts; `[release-championship]` publishes a separate report that is neither Latest nor a Pre-release.
+- 游戏 Release 不含锦标赛文件，锦标赛 Release 不含游戏二进制。/ Game releases exclude championship files; championship releases exclude game binaries.
+- `gh workflow run` 是无需空提交的等价手动入口。/ `gh workflow run` is the equivalent manual entry that needs no empty commit.
+- Release 正文必须从 `.github/release-templates/` 的对应模板渲染且不得残留占位符。/ Render Release bodies from the matching `.github/release-templates/` template with no unresolved placeholders.
+- 发布前确认 VERSION、工作树、测试、标签和 Release 状态。/ Verify VERSION, worktree, tests, tags, and Release state before publishing.

@@ -5,6 +5,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      destination:
+        description: Upload an artifact or publish a championship release
+        type: choice
+        options:
+          - artifact
+          - release
+        default: artifact
       sizes:
         description: Comma-separated board sizes
         type: string
@@ -38,10 +45,20 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.trigger.outputs.should_run }}
+      should_publish: ${{ steps.trigger.outputs.should_publish }}
+      trigger_source: ${{ steps.trigger.outputs.trigger_source }}
       matrix: ${{ steps.config.outputs.matrix }}
       algorithms: ${{ steps.config.outputs.algorithms }}
       runs: ${{ steps.config.outputs.runs }}
       master_seed: ${{ steps.config.outputs.master_seed }}
+      version: ${{ steps.metadata.outputs.version }}
+      short_sha: ${{ steps.metadata.outputs.short_sha }}
+      recorded_at_utc: ${{ steps.metadata.outputs.recorded_at_utc }}
+      recorded_at_local: ${{ steps.metadata.outputs.recorded_at_local }}
+      file_stamp: ${{ steps.metadata.outputs.file_stamp }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      archive_name: ${{ steps.metadata.outputs.archive_name }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
     steps:
       - uses: actions/checkout@v7
 
@@ -50,14 +67,60 @@ jobs:
         shell: bash
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          MANUAL_DESTINATION: ${{ inputs.destination || 'artifact' }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
-            python scripts/ci/ci-trigger.py --message "$COMMIT_MESSAGE" --token run-championship; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          SHOULD_RUN=false
+          SHOULD_PUBLISH=false
+          TRIGGER_SOURCE="event:${{ github.event_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SHOULD_RUN=true
+            case "$MANUAL_DESTINATION" in
+              artifact) ;;
+              release) SHOULD_PUBLISH=true ;;
+              *) echo "Unsupported destination: $MANUAL_DESTINATION" >&2; exit 1 ;;
+            esac
+            TRIGGER_SOURCE="manual:$MANUAL_DESTINATION"
+          elif python scripts/ci/ci-trigger.py --message "$COMMIT_MESSAGE" \
+            --token release-championship; then
+            SHOULD_RUN=true
+            SHOULD_PUBLISH=true
+            TRIGGER_SOURCE="commit:release-championship"
+          elif python scripts/ci/ci-trigger.py --message "$COMMIT_MESSAGE" \
+            --token run-championship; then
+            SHOULD_RUN=true
+            TRIGGER_SOURCE="commit:run-championship"
           fi
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+          echo "should_publish=$SHOULD_PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "trigger_source=$TRIGGER_SOURCE" >> "$GITHUB_OUTPUT"
+
+      - name: Build release metadata
+        id: metadata
+        if: steps.trigger.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '\r\n' < VERSION)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must contain a SemVer value such as 0.6.0." >&2
+            exit 1
+          fi
+          RECORDED_AT_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          FILE_STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
+          RECORDED_AT_LOCAL="$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M CST')"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          RELEASE_TAG="championship-v${VERSION}-${FILE_STAMP}-${SHORT_SHA}-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
+          ARCHIVE_NAME="lua-love2d-snake-championship-v${VERSION}-${FILE_STAMP}-${SHORT_SHA}.zip"
+          ARTIFACT_NAME="lua-love2d-snake-championship-${FILE_STAMP}-${SHORT_SHA}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "recorded_at_utc=$RECORDED_AT_UTC" >> "$GITHUB_OUTPUT"
+          echo "recorded_at_local=$RECORDED_AT_LOCAL" >> "$GITHUB_OUTPUT"
+          echo "file_stamp=$FILE_STAMP" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "archive_name=$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Build and validate the scenario matrix
         id: config
@@ -148,19 +211,93 @@ jobs:
             --merge-manifest build/championship-manifest.txt \
             --output-dir build/championship
 
+      - name: Install chart dependencies
+        if: steps.merge.outcome == 'success'
+        run: >-
+          python -m pip install --disable-pip-version-check
+          matplotlib==3.10.6 pyparsing==3.2.5
+
+      - name: Render charts, archive, and release body
+        id: visuals
+        if: steps.merge.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            scripts/ci/test-ci-tools.py \
+            scripts/championship/test-championship-cli.py
+          python scripts/championship/championship-cli.py render \
+            --input build/championship/championship.json \
+            --archive "build/championship/${{ needs.prepare.outputs.archive_name }}"
+          python scripts/ci/ci-render-release.py championship \
+            --template .github/release-templates/championship-release.md \
+            --output build/championship/release-body.md \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --tag "${{ needs.prepare.outputs.release_tag }}" \
+            --sha "$GITHUB_SHA" \
+            --recorded-at-utc "${{ needs.prepare.outputs.recorded_at_utc }}" \
+            --recorded-at-local "${{ needs.prepare.outputs.recorded_at_local }}" \
+            --workflow-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --trigger "${{ needs.prepare.outputs.trigger_source }}" \
+            --report build/championship/championship.json \
+            --archive-name "${{ needs.prepare.outputs.archive_name }}"
+          cd build/championship
+          sha256sum \
+            "${{ needs.prepare.outputs.archive_name }}" \
+            championship-reliability.png \
+            championship-efficiency.png \
+            championship-scenarios.png \
+            > SHA256SUMS.txt
+
       - name: Add report to the job summary
         if: always() && hashFiles('build/championship/championship.md') != ''
-        run: cat build/championship/championship.md >> "$GITHUB_STEP_SUMMARY"
+        run: >-
+          sed '/CHAMPIONSHIP_VISUALS_START/,/CHAMPIONSHIP_VISUALS_END/d'
+          build/championship/championship.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload championship reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: lua-love2d-snake-championship
-          path: build/championship/championship.*
+          name: ${{ needs.prepare.outputs.artifact_name }}
+          path: build/championship/*
           retention-days: 14
           if-no-files-found: error
 
       - name: Fail after preserving error reports
-        if: steps.merge.outcome != 'success' || needs.championship.result != 'success'
+        if: >-
+          steps.merge.outcome != 'success' ||
+          steps.visuals.outcome != 'success' ||
+          needs.championship.result != 'success'
         run: exit 1
+
+  publish:
+    needs: [prepare, aggregate]
+    if: needs.prepare.outputs.should_publish == 'true' && needs.aggregate.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.prepare.outputs.artifact_name }}
+          path: release-files
+
+      - name: Create permanent championship release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ needs.prepare.outputs.release_tag }}" \
+            "release-files/${{ needs.prepare.outputs.archive_name }}" \
+            release-files/championship-reliability.png \
+            release-files/championship-efficiency.png \
+            release-files/championship-scenarios.png \
+            release-files/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "AI Championship ${{ needs.prepare.outputs.version }} · ${{ needs.prepare.outputs.recorded_at_local }} · ${{ needs.prepare.outputs.short_sha }}" \
+            --notes-file release-files/release-body.md \
+            --latest=false

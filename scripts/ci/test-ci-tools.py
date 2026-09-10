@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 
@@ -23,6 +25,7 @@ def load_module(name: str, filename: str):
 
 trigger = load_module("ci_trigger", "ci-trigger.py")
 package = load_module("package_love", "ci-package-love.py")
+release_renderer = load_module("release_renderer", "ci-render-release.py")
 
 
 class TriggerTests(unittest.TestCase):
@@ -30,6 +33,8 @@ class TriggerTests(unittest.TestCase):
         self.assertTrue(trigger.contains_token("ship [build-action]", "build-action"))
         self.assertTrue(trigger.contains_token("[build-release]\nnotes", "build-release"))
         self.assertTrue(trigger.contains_token("compare [run-championship]", "run-championship"))
+        self.assertTrue(trigger.contains_token(
+            "publish [release-championship]", "release-championship"))
 
     def test_rejects_unbracketed_and_wrong_case(self) -> None:
         self.assertFalse(trigger.contains_token("build-action", "build-action"))
@@ -56,6 +61,71 @@ class PackageTests(unittest.TestCase):
             second_output = root / "dist" / "game-again.love"
             package.build_package(root, second_output)
             self.assertEqual(output.read_bytes(), second_output.read_bytes())
+
+
+class ReleaseTemplateTests(unittest.TestCase):
+    def test_unresolved_placeholders_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unresolved release placeholders"):
+            release_renderer.render_template("Version __VERSION__ / __MISSING__", {"VERSION": "0.6.0"})
+
+    def test_game_and_championship_templates_render(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            changes = root / "changes.md"
+            changes.write_text("- Added charts", encoding="utf-8")
+            game_args = SimpleNamespace(
+                repository="VincentZyuApps/lua-love2d-snake",
+                version="0.6.0",
+                tag="v0.6.0",
+                sha="a" * 40,
+                recorded_at_utc="2026-09-10T12:00:00Z",
+                workflow_url="https://github.com/example/actions/runs/1",
+                changes_file=str(changes),
+            )
+            game_template = (REPOSITORY_ROOT / ".github/release-templates/game-release.md").read_text(
+                encoding="utf-8")
+            game = release_renderer.render_template(
+                game_template, release_renderer.game_values(game_args))
+            self.assertNotRegex(game, release_renderer.PLACEHOLDER)
+            self.assertIn("lua-love2d-snake-v0.6.0.love", game)
+
+            report = root / "championship.json"
+            report.write_text(json.dumps({
+                "schemaVersion": 1,
+                "kind": "lua-love2d-snake-championship",
+                "config": {
+                    "sizes": [{"key": "10x8"}],
+                    "edges": ["walls"],
+                    "runs": 1,
+                    "masterSeed": "test",
+                },
+                "games": [{}],
+                "rankings": {"overall": {
+                    "reliability": [{"algorithm": "hamiltonian", "rank": 1}],
+                    "efficiency": [{"algorithm": "hamiltonian", "rank": 1}],
+                }},
+            }), encoding="utf-8")
+            championship_args = SimpleNamespace(
+                repository="VincentZyuApps/lua-love2d-snake",
+                version="0.6.0",
+                tag="championship-v0.6.0-test",
+                sha="b" * 40,
+                recorded_at_utc="2026-09-10T12:00:00Z",
+                recorded_at_local="2026-09-10 20:00 CST",
+                workflow_url="https://github.com/example/actions/runs/2",
+                trigger="manual:release",
+                report=str(report),
+                archive_name="championship.zip",
+            )
+            championship_template = (
+                REPOSITORY_ROOT / ".github/release-templates/championship-release.md"
+            ).read_text(encoding="utf-8")
+            championship_body = release_renderer.render_template(
+                championship_template,
+                release_renderer.championship_values(championship_args),
+            )
+            self.assertNotRegex(championship_body, release_renderer.PLACEHOLDER)
+            self.assertIn("championship-reliability.png", championship_body)
 
 
 class NamingTests(unittest.TestCase):

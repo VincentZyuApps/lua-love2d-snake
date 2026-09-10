@@ -40,9 +40,11 @@
 - `-/+` 调速，`F2` 输入 seed，`R` 重放，`L` 查看分榜；AUTO 忽略转向，HYBRID 覆盖下一步。/ Use `-/+` for speed, `F2` for seeds, `R` to replay, and `L` for leaderboards; AUTO ignores turns and HYBRID overrides one step.
 
 ## 🏆 无头锦标赛 / Headless Championship
-执行 `lovec . --run-championship` 或 `lua5.1 scripts/championship/run-championship.lua` 生成可复现的 Markdown、CSV、JSON 双榜，详见 `docs/CHAMPIONSHIP.md`。/ Run `lovec . --run-championship` or `lua5.1 scripts/championship/run-championship.lua` for reproducible Markdown, CSV, and JSON rankings; see `docs/CHAMPIONSHIP.md`.
+执行 `uv run --script scripts/championship/championship-cli.py run` 可一次生成 Markdown、CSV、JSON 与三张 PNG；原始 Lua 入口仍可用。/ Run `uv run --script scripts/championship/championship-cli.py run` to generate Markdown, CSV, JSON, and three PNGs at once; the raw Lua entry remains available.
+默认以六个场景运行 480 局确定性 AUTO 比赛，完整参数与指标见 `docs/CHAMPIONSHIP.md`。/ The defaults run 480 deterministic AUTO games across six scenarios; see `docs/CHAMPIONSHIP.md` for parameters and metrics.
 
-## 📦 构建 / Builds
+## 📦 构建与发布 / Build and Release
 
-- `[build-action]` 构建 `.love`、Windows、Linux 与 macOS Artifact；`[build-release]` 额外发布 Release。/ `[build-action]` builds `.love`, Windows, Linux, and macOS artifacts; `[build-release]` also publishes a release.
-- `[run-championship]` 运行 480 局默认赛事并上传报告；原生包未正式签名，游戏运行时保持纯 Lua。/ `[run-championship]` runs the default 480 games and uploads reports; native packages are unsigned and the runtime stays pure Lua.
+- `[build-action]` 生成游戏 Artifact；`[build-release]` 发布独立的 Latest 游戏 Release。/ `[build-action]` creates game artifacts; `[build-release]` publishes the separate Latest game release.
+- `[run-championship]` 生成 14 天报告 Artifact；`[release-championship]` 发布独立、非 Latest 的锦标赛 Release。/ `[run-championship]` creates a 14-day report artifact; `[release-championship]` publishes a separate, non-Latest championship release.
+- 两类流程也可通过 `gh workflow run` 手动触发；原生游戏包未正式签名，运行时保持纯 Lua。/ Both workflows also support `gh workflow run`; native game packages are unsigned and the runtime remains pure Lua.

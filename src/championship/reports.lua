@@ -184,16 +184,16 @@ local function efficiencyTable(lines, ranking, normalized)
 end
 
 local function renderMarkdown(document)
-    local lines = { "# AI Championship", "", "Deterministic AUTO results. Wall-clock timing is intentionally excluded.",
-        "", "## Overall Reliability", "" }
+    local lines = { "# 🏆 AI Championship", "", "Deterministic AUTO results. Wall-clock timing is intentionally excluded.",
+        "", "## 🛡️ Overall Reliability", "" }
     reliabilityTable(lines, document.rankings.overall)
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "## Overall Efficiency"
+    lines[#lines + 1] = "## ⚡ Overall Efficiency"
     lines[#lines + 1] = ""
     efficiencyTable(lines, document.rankings.overall, true)
     for _, scenario in ipairs(document.rankings.scenarios) do
         lines[#lines + 1] = ""
-        lines[#lines + 1] = "## " .. scenario.size .. " / " .. string.upper(scenario.edge)
+        lines[#lines + 1] = "## 🗺️ " .. scenario.size .. " / " .. string.upper(scenario.edge)
         lines[#lines + 1] = ""
         reliabilityTable(lines, scenario)
         lines[#lines + 1] = ""
